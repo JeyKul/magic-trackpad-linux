@@ -88,6 +88,18 @@ their 3×3 nearest dots. It only renders while something moves. Worst case
 
 ## Install
 
+One command, on Arch, Debian/Ubuntu and Fedora:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/JeyKul/magic-trackpad-linux/main/get.sh | sh
+```
+
+It installs the dependencies for your distro and desktop (KDE Plasma gets the
+System Settings page, everything else the GTK app), clones the repository to
+`~/.local/share/mt2d/src` and runs `install.sh`. Run it again to update.
+Prefer to look first? `MT2D_DRY_RUN=1` prints the commands instead of running
+them, or follow the manual steps below.
+
 ### Requirements
 
 There are three parts; install the driver plus the settings UI for your
