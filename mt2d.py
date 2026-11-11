@@ -317,6 +317,10 @@ class Clicker:
         click, release = feel(cfg)
         c, fc = cfg["click"], cfg["force_click"]
         force_on = fc["enabled"]
+        # A release point at or above its threshold would re-click on every frame
+        # while held; keep a gap whatever the config says
+        release = min(c["release"], c["threshold"] - 10)
+        force_release = min(fc["release"], fc["threshold"] - 10)
 
         if self.state == self.IDLE:
             if peak >= c["threshold"]:
@@ -330,7 +334,7 @@ class Clicker:
                     self.set_left(out, True)
             return
 
-        if peak < c["release"]:
+        if peak < release:
             if self.state == self.PENDING:
                 # Quick click that never reached force: deliver it now
                 self.set_left(out, True)
@@ -341,7 +345,7 @@ class Clicker:
             return
 
         if self.state == self.FORCED:
-            if peak < fc["release"]:
+            if peak < force_release:
                 self.state = self.DOWN
             return
 
