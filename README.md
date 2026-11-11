@@ -1,8 +1,9 @@
 # mt2d — Magic Trackpad 2 for Linux
 
 Pressure-sensitive clicking, adjustable click force, haptic feedback strength,
-silent clicks and **force click** for the Apple Magic Trackpad 2 on Linux,
-with a native settings page for KDE Plasma and a GTK app for everything else.
+silent clicks and **force click** for the Apple Magic Trackpad 2 **and the
+built-in Force Touch trackpad of T2 MacBooks** on Linux, with a native
+settings page for KDE Plasma and a GTK app for everything else.
 
 Free and open source. Runs in userspace next to the in-kernel
 `hid-magicmouse` driver: no kernel module, survives kernel updates.
@@ -26,8 +27,16 @@ Free and open source. Runs in userspace next to the in-kernel
   rejection, pointer speed) stays with libinput and your desktop's own
   touchpad settings, exactly as before
 
-Tested with the Lightning Magic Trackpad 2 over Bluetooth and USB. The USB-C
-model is recognised but untested; reports welcome.
+| Device | Status |
+|---|---|
+| Magic Trackpad 2 (Lightning), Bluetooth | tested |
+| Magic Trackpad 2 (Lightning), USB | tested |
+| MacBook Pro 15″ 2018 (MacBookPro15,1) built-in trackpad | tested |
+| Other T2 MacBooks (2018–2020) built-in trackpad | should work, untested |
+| Magic Trackpad (USB-C, 2024) | recognised, untested |
+
+Reports for the untested ones are very welcome. T2 MacBooks need a kernel
+with T2 support, e.g. from [t2linux](https://t2linux.org).
 
 ## How it works
 
@@ -58,6 +67,13 @@ splits into four interfaces: touches arrive on interface 1, the battery on
 interface 0, and the reports above go unwrapped to interface 2 (the one
 declaring output report `0x53`), with the actuator report as a plain
 interrupt write.
+
+The built-in trackpad of T2 MacBooks sits behind the T2's internal USB bridge
+and has the same layout as the Magic Trackpad 2 over USB (touches on
+interface 2, reports on interface 3). It reports raw force (0–6000) rather
+than the Magic Trackpad's 0–253, so mt2d maps it onto the same scale, fitted
+so the firmware's own click point and a hard press land on the default click
+and force-click thresholds. All settings work the same on both.
 
 The live preview is a two-pass fragment shader: pass 1 computes each dot's
 light and displacement once into a tiny texture, pass 2 shades pixels from
@@ -118,8 +134,9 @@ sudo dnf install cmake extra-cmake-modules gcc-c++ kf6-kcmutils-devel kf6-ki18n-
 sudo dnf install python3-gobject gtk4 libadwaita python3-pyopengl
 ```
 
-Your user also needs to be in the `input` group, for access to the touch
-input and to create the virtual input devices:
+The installer's udev rule gives the logged-in user access to the trackpad
+(on MacBooks only to the trackpad, never to the keyboard). If mt2d still
+can't create its virtual input devices, add yourself to the `input` group:
 
 ```sh
 sudo usermod -aG input "$USER"   # then log out and back in
