@@ -13,10 +13,10 @@ sed 's|Exec=mt2d-settings|Exec='"$HOME"'/.local/bin/mt2d-settings|' data/io.gith
 sed 's|/usr/bin/mt2d|%h/.local/bin/mt2d|g' data/mt2d.service | install -Dm644 /dev/stdin ~/.config/systemd/user/mt2d.service
 [ -f ~/.config/mt2d/config.toml ] || install -Dm644 config.example.toml ~/.config/mt2d/config.toml
 
-if [ ! -f /etc/udev/rules.d/70-magic-trackpad.rules ]; then
+if ! cmp -s data/70-magic-trackpad.rules /etc/udev/rules.d/70-magic-trackpad.rules; then
     sudo install -m644 data/70-magic-trackpad.rules /etc/udev/rules.d/
     sudo udevadm control --reload
-    sudo udevadm trigger -s hidraw
+    sudo udevadm trigger -s hidraw -s input -s misc
 fi
 
 case "$XDG_CURRENT_DESKTOP" in

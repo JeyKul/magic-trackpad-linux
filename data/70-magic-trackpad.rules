@@ -1,7 +1,17 @@
-# Magic Trackpad 2 (Lightning + USB-C), USB and Bluetooth: let the logged-in user drive haptics via hidraw
-KERNEL=="hidraw*", KERNELS=="0003:05AC:0265.*", TAG+="uaccess"
-KERNEL=="hidraw*", KERNELS=="0003:05AC:0324.*", TAG+="uaccess"
+# mt2d: give the logged-in user access to Magic Trackpad 2 and T2 MacBook trackpads
+
+# Magic Trackpad 2 (Lightning + USB-C), Bluetooth and USB: all hidraw interfaces
 KERNEL=="hidraw*", KERNELS=="0005:004C:0265.*", TAG+="uaccess"
 KERNEL=="hidraw*", KERNELS=="0005:004C:0324.*", TAG+="uaccess"
+KERNEL=="hidraw*", KERNELS=="0003:05AC:0265.*", TAG+="uaccess"
+KERNEL=="hidraw*", KERNELS=="0003:05AC:0324.*", TAG+="uaccess"
+
+# T2 MacBook built-in trackpad: only USB interface 3 (haptics and click mode).
+# The same USB device also carries the keyboard, which stays root-only.
+SUBSYSTEM=="hidraw", IMPORT{builtin}="usb_id", ENV{ID_VENDOR_ID}=="05ac", ENV{ID_MODEL_ID}=="0278|027a|027b|027c|027d|027e|027f|0280|0340", ENV{ID_USB_INTERFACE_NUM}=="03", TAG+="uaccess"
+
+# Touch input of all of them (touchpad nodes only, never keyboards)
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", ATTRS{id/vendor}=="004c|05ac", ATTRS{id/product}=="0265|0324|0278|027a|027b|027c|027d|027e|027f|0280|0340", TAG+="uaccess"
+
 # mt2d re-emits the trackpad and force-click actions through uinput; some distros keep it root-only
 KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

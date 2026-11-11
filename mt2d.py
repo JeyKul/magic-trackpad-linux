@@ -46,6 +46,23 @@ SUPPORTED = {
     (0x0003, 0x05AC, 0x0265), (0x0003, 0x05AC, 0x0324),
     (0x0005, 0x004C, 0x0265), (0x0005, 0x004C, 0x0324),
 }
+# Built-in Force Touch trackpads of T2 MacBooks (behind the T2's USB bridge).
+# Same interface layout and reports as the Magic Trackpad 2 over USB.
+SUPPORTED |= {(0x0003, 0x05AC, pid) for pid in (0x0278, 0x027A, 0x027B, 0x027C, 0x027D,
+                                                0x027E, 0x027F, 0x0280, 0x0340)}
+
+# Thresholds are in Magic Trackpad 2 units (0..253). Trackpads reporting raw
+# force (T2 MacBooks: 0..6000) are mapped onto that scale with a curve fitted on
+# a MacBookPro15,1: its firmware clicks at ~130 raw (-> 90, the default click
+# threshold) and a hard press reaches ~1500 raw (-> 250, the default force click).
+RAW_FORCE_FULL = 1543
+RAW_FORCE_GAMMA = 0.418
+
+
+def pressure_scale(maximum):
+    if maximum <= 255:
+        return lambda v: v
+    return lambda v: min(253, round(253 * (v / RAW_FORCE_FULL) ** RAW_FORCE_GAMMA)) if v > 0 else 0
 
 # Same presets as the Windows control panel: (click, release) in 0xCCBBSS
 STRENGTH = {
@@ -162,6 +179,7 @@ class Trackpad:
         self.hidraw_path = control
         self.hid = os.open(control, os.O_RDWR)
         self.dev = evdev.InputDevice(event)
+        self.scale = pressure_scale(self.dev.absinfo(ecodes.ABS_MT_PRESSURE).max)
         self.battery = battery
         self.usb = usb
         self.pulses = queue.Queue()
@@ -360,6 +378,7 @@ class Daemon:
         self.actions = None
         self.running = True
         self.peak = 0
+        self.warned = False
         self.clicks = self.forces = 0  # event counters, so polling UIs never miss a click
         if os.path.exists(SOCKET_PATH):
             os.unlink(SOCKET_PATH)
@@ -409,7 +428,15 @@ class Daemon:
             self.clone = None
 
     def connect(self):
-        self.pad = find_trackpad()
+        try:
+            self.pad = find_trackpad()
+        except PermissionError as e:
+            # Typically the udev rule is missing; keep waiting instead of crash-looping
+            if not self.warned:
+                self.log(f"no access to {e.filename}: install the udev rule (see README)")
+                self.warned = True
+            return False
+        self.warned = False
         if not self.pad:
             return False
         self.log(f"connected: {self.pad.dev.name} ({self.pad.hidraw_path}, {self.pad.dev.path})")
@@ -467,7 +494,7 @@ class Daemon:
             if ev.code == ecodes.ABS_MT_SLOT:
                 self.slot = ev.value
             elif ev.code == ecodes.ABS_MT_PRESSURE:
-                self.pressure[self.slot] = ev.value
+                self.pressure[self.slot] = self.pad.scale(ev.value)
             elif ev.code == ecodes.ABS_MT_POSITION_X:
                 self.pos[self.slot] = (ev.value, self.pos.get(self.slot, (0, 0))[1])
             elif ev.code == ecodes.ABS_MT_POSITION_Y:
@@ -613,7 +640,10 @@ def send(cmd):
 
 def restore():
     """Put the firmware back in charge of clicking (used by systemd after a crash)."""
-    pad = find_trackpad()
+    try:
+        pad = find_trackpad()
+    except PermissionError:
+        return
     if pad:
         pad.host_click(False)
         pad.close()
@@ -629,7 +659,7 @@ def monitor():
         if ev.type == ecodes.EV_ABS and ev.code == ecodes.ABS_MT_SLOT:
             slot = ev.value
         elif ev.type == ecodes.EV_ABS and ev.code == ecodes.ABS_MT_PRESSURE:
-            pressure[slot] = ev.value
+            pressure[slot] = pad.scale(ev.value)
         elif ev.type == ecodes.EV_ABS and ev.code == ecodes.ABS_MT_TRACKING_ID and ev.value == -1:
             pressure.pop(slot, None)
         elif ev.type == ecodes.EV_SYN:
@@ -665,7 +695,8 @@ def main():
         send({"op": "reload"})
     elif a.cmd == "status":
         r = send({"op": "status"})
-        print(f"{r['name']}  battery: {r['battery']}%  ({r['hidraw']}, {r['event']})")
+        battery = f"  battery: {r['battery']}%" if r["battery"] is not None else ""
+        print(f"{r['name']}{battery}  ({r['hidraw']}, {r['event']})")
         print(json.dumps(r["config"], indent=2))
 
 
