@@ -159,6 +159,10 @@ def save_config(cfg):
     os.replace(tmp, CONFIG_PATH)
 
 
+def silent(cfg):
+    return cfg["haptics"]["strength"] == "off" or cfg["haptics"].get("silent", False)
+
+
 def feel(cfg):
     h = cfg["haptics"]
     click, release = STRENGTH[h["strength"]]
@@ -210,8 +214,8 @@ class Trackpad:
         self.set_feature(haptic_report(0x23, release, 0x13))
 
     def pulse(self, value):
-        if value & 0xFFFF00:
-            self.pulses.put(value)
+        # Zero amplifier bytes still give the soft release tick, so always send
+        self.pulses.put(value)
 
     def pulse_now(self, value):
         # Cap the amplifier bytes like the Windows driver: higher is hardware-stress territory
@@ -324,7 +328,8 @@ class Clicker:
 
         if self.state == self.IDLE:
             if peak >= c["threshold"]:
-                self.d.pad.pulse(click)
+                if not silent(cfg):
+                    self.d.pad.pulse(click)
                 self.d.clicks += 1
                 self.since, self.origin, self.force_since = now, pos, None
                 if force_on and fc["replace_click"]:
@@ -340,7 +345,8 @@ class Clicker:
                 self.set_left(out, True)
                 out.append(None)
             self.set_left(out, False)
-            self.d.pad.pulse(release)
+            if not silent(cfg):
+                self.d.pad.pulse(release)
             self.state = self.IDLE
             return
 
@@ -354,7 +360,8 @@ class Clicker:
                 self.force_since = self.force_since or now
                 if (now - self.force_since) * 1000 >= fc["dwell_ms"]:
                     self.state = self.FORCED
-                    self.d.pad.pulse(FORCE_PULSE if click & 0xFFFF00 else 0)
+                    if not silent(cfg):
+                        self.d.pad.pulse(FORCE_PULSE)
                     self.d.force_action()
                     self.d.forces += 1
                     self.d.log(f"force click (pressure {peak})")
