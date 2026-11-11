@@ -203,8 +203,9 @@ class Trackpad:
         self.battery = battery
         self.usb = usb
         # Fastest steady pulse rate (MIDI easter egg): measured ~215/s on a Magic
-        # Trackpad over USB; the T2 bridge stalls above ~85/s
-        self.max_pulse_hz = 80.0 if ids in T2_TRACKPADS or not usb else 160.0
+        # Trackpad over USB; the T2 bridge stalls above ~85/s. Over Bluetooth a
+        # sustained pulse train made the trackpad drop the connection, so none.
+        self.max_pulse_hz = 0.0 if not usb else 80.0 if ids in T2_TRACKPADS else 160.0
         self.pulses = queue.Queue()
         # Each pulse is a SET_REPORT round trip over Bluetooth; keep it off the event loop
         threading.Thread(target=self._pulse_worker, daemon=True).start()
@@ -570,6 +571,7 @@ class Daemon:
         self.actions = None
         self.running = True
         self.peak = 0
+        self.battery_cache = None
         self.player = None
         self.midi_notes = self.midi_pitch = 0
         self.warned = False
@@ -645,6 +647,7 @@ class Daemon:
             return False
         self.log(f"connected: {self.pad.dev.name} ({self.pad.hidraw_path}, {self.pad.dev.path})")
         self.clicker = Clicker(self)
+        self.battery_cache = None
         self.pressure, self.pos, self.slot, self.peak = {}, {}, 0, 0
         try:
             self.apply()
@@ -658,6 +661,8 @@ class Daemon:
     # -- MIDI ---------------------------------------------------------------
 
     def play_midi(self, path):
+        if not self.pad.max_pulse_hz:
+            raise ValueError("MIDI playback needs a USB connection; over Bluetooth it overloads the trackpad")
         with open(path, "rb") as f:
             line = melody(parse_midi(f.read()))
         if not line:
@@ -749,13 +754,18 @@ class Daemon:
         self.clone.write_event(ev)
 
     def battery(self):
-        if self.pad and self.pad.battery:
+        # Reading the capacity makes the kernel ask the trackpad, a full round trip
+        # over Bluetooth; the settings apps poll many times a second, so cache it
+        if not (self.pad and self.pad.battery):
+            return None
+        now = time.monotonic()
+        if self.battery_cache is None or now - self.battery_cache[0] > 60:
             try:
                 with open(self.pad.battery) as f:
-                    return int(f.read())
+                    self.battery_cache = (now, int(f.read()))
             except OSError:
-                pass
-        return None
+                self.battery_cache = (now, None)
+        return self.battery_cache[1]
 
     def touches(self):
         """Fingers as x/y in 0..1 (origin top left) plus pressure."""

@@ -165,7 +165,8 @@ Plasma, or the **Magic Trackpad** app elsewhere. Everything is also in
 
 ### Easter egg
 
-Drop a `.mid` file onto the live preview and keep a finger on the trackpad:
+Drop a `.mid` file onto the live preview and keep a finger on the trackpad
+(USB or MacBook only; a sustained pulse train overloads the Bluetooth link):
 its melody plays on the haptic motor, every note rippling across the field.
 Click the field to stop. The actuator can only click, so notes are pulse
 trains at their frequency, the same trick as
