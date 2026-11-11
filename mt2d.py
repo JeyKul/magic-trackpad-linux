@@ -303,6 +303,166 @@ def find_trackpad():
     return None
 
 
+# -- MIDI on the actuator ------------------------------------------------------
+#
+# The actuator only clicks, so a note is played the way ForceTouchPlayer does it:
+# a train of soft pulses at the note's frequency ("software PWM"). Keep a finger
+# on the trackpad to hear it. One write per pulse limits the top note to what
+# the link can carry (~215 writes/s over USB), so the melody is shifted by
+# octaves into a playable range.
+
+MIDI_LOW_HZ = 30.0
+MIDI_PULSE = 0x040415     # light: loud enough to hear, gentle on the actuator
+MIDI_ACCENT = 0x060617    # medium click on each note's first pulse, so note changes stand out
+MIDI_MAX_SECONDS = 300
+
+
+def _vlq(data, i):
+    value = 0
+    while True:
+        b = data[i]
+        i += 1
+        value = (value << 7) | (b & 0x7F)
+        if not b & 0x80:
+            return value, i
+
+
+def parse_midi(data):
+    """Notes of a Standard MIDI File as (start s, end s, note), drums left out."""
+    if data[:4] != b"MThd":
+        raise ValueError("not a MIDI file")
+    ntracks = int.from_bytes(data[10:12], "big")
+    division = int.from_bytes(data[12:14], "big")
+    if division & 0x8000:
+        raise ValueError("SMPTE-timed MIDI files are not supported")
+    pos = 8 + int.from_bytes(data[4:8], "big")
+    tempos = [(0, 500000)]          # (tick, microseconds per quarter note)
+    raw = []                        # (start tick, end tick, note)
+    for _ in range(ntracks):
+        if data[pos:pos + 4] != b"MTrk":
+            break
+        end = pos + 8 + int.from_bytes(data[pos + 4:pos + 8], "big")
+        i, tick, status, held = pos + 8, 0, 0, {}
+        while i < end:
+            delta, i = _vlq(data, i)
+            tick += delta
+            if data[i] & 0x80:
+                status = data[i]
+                i += 1
+            kind = status & 0xF0
+            if status == 0xFF:
+                meta = data[i]
+                length, i = _vlq(data, i + 1)
+                if meta == 0x51 and length == 3:
+                    tempos.append((tick, int.from_bytes(data[i:i + 3], "big")))
+                i += length
+            elif status in (0xF0, 0xF7):
+                length, i = _vlq(data, i)
+                i += length
+            elif kind in (0x80, 0x90):
+                note, velocity = data[i], data[i + 1]
+                i += 2
+                key = (status & 0x0F, note)
+                if kind == 0x90 and velocity:
+                    held[key] = tick
+                elif key in held and status & 0x0F != 9:
+                    raw.append((held.pop(key), tick, note))
+            elif kind in (0xC0, 0xD0):
+                i += 1
+            else:
+                i += 2
+        pos = end
+
+    tempos.sort()
+
+    def seconds(t):
+        total, last_tick, last_tempo = 0.0, 0, 500000
+        for tick, tempo in tempos:
+            if tick >= t:
+                break
+            total += (tick - last_tick) * last_tempo / division / 1e6
+            last_tick, last_tempo = tick, tempo
+        return total + (t - last_tick) * last_tempo / division / 1e6
+
+    return [(seconds(a), seconds(b), n) for a, b, n in raw if b > a]
+
+
+def melody(notes):
+    """Top line: at every moment the highest sounding note, retriggered on new notes."""
+    events = sorted([(a, 1, n, a) for a, b, n in notes] + [(b, 0, n, a) for a, b, n in notes])
+    active = {}                     # (note, start) -> count
+    line, i = [], 0
+    while i < len(events):
+        t = events[i][0]
+        while i < len(events) and events[i][0] == t:
+            _, on, n, a = events[i]
+            key = (n, a)
+            if on:
+                active[key] = active.get(key, 0) + 1
+            elif key in active:
+                active[key] -= 1
+                if not active[key]:
+                    del active[key]
+            i += 1
+        if line and line[-1][1] is None:
+            line[-1][1] = t
+        if active and i < len(events):
+            note, begun = max(active)
+            if line and line[-1][2] == note and line[-1][3] == begun and line[-1][1] == t:
+                line[-1][1] = None  # same note keeps sounding: extend
+            else:
+                line.append([t, None, note, begun])
+    return [(a, b, n) for a, b, n, _ in line if b is not None and b > a]
+
+
+def fit_octaves(line, top_hz):
+    """Shift the melody by whole octaves to fit [MIDI_LOW_HZ, top_hz]; fold outliers."""
+    def hz(n):
+        return 440.0 * 2 ** ((n - 69) / 12)
+    # Most notes in range; on a tie the highest octave, which is the clearest
+    best = max(range(-6, 4), key=lambda k: (sum(MIDI_LOW_HZ <= hz(n + 12 * k) <= top_hz for _, _, n in line), k))
+    out = []
+    for a, b, n in line:
+        n += 12 * best
+        while hz(n) > top_hz:
+            n -= 12
+        while hz(n) < MIDI_LOW_HZ:
+            n += 12
+        out.append((a, b, n, hz(n)))
+    return out
+
+
+class MidiPlayer(threading.Thread):
+    def __init__(self, daemon, line):
+        super().__init__(daemon=True)
+        self.d = daemon
+        self.line = line
+        self.stopped = threading.Event()
+
+    def run(self):
+        pad = self.d.pad
+        start = time.monotonic()
+        try:
+            for a, b, note, freq in self.line:
+                if a > MIDI_MAX_SECONDS:
+                    break
+                self.d.midi_note(note)
+                period = 1.0 / freq
+                # Leave a short gap so repeated notes stay distinct
+                t, stop = start + a, start + max(a + 0.02, b - 0.015)
+                pulse = MIDI_ACCENT
+                while t < stop:
+                    if self.stopped.wait(max(0.0, t - time.monotonic())):
+                        return
+                    pad.pulse_now(pulse)
+                    pulse = MIDI_PULSE
+                    t += period
+        except OSError:
+            pass
+        finally:
+            self.d.midi_done(self)
+
+
 def key_codes(names):
     codes = []
     for name in names:
@@ -404,6 +564,8 @@ class Daemon:
         self.actions = None
         self.running = True
         self.peak = 0
+        self.player = None
+        self.midi_notes = self.midi_pitch = 0
         self.warned = False
         self.clicks = self.forces = 0  # event counters, so polling UIs never miss a click
         if os.path.exists(SOCKET_PATH):
@@ -487,7 +649,34 @@ class Daemon:
             return False
         return True
 
+    # -- MIDI ---------------------------------------------------------------
+
+    def play_midi(self, path):
+        with open(path, "rb") as f:
+            line = melody(parse_midi(f.read()))
+        if not line:
+            raise ValueError("no notes to play")
+        self.stop_midi()
+        top = 160.0 if self.pad.usb else 80.0  # what one write per pulse can keep up with
+        self.player = MidiPlayer(self, fit_octaves(line, top))
+        self.player.start()
+        self.log(f"playing {os.path.basename(path)}: {len(line)} notes")
+
+    def stop_midi(self):
+        if self.player:
+            self.player.stopped.set()
+            self.player = None
+
+    def midi_note(self, note):
+        self.midi_pitch = note
+        self.midi_notes += 1
+
+    def midi_done(self, player):
+        if self.player is player:
+            self.player = None
+
     def disconnect(self):
+        self.stop_midi()
         self.log("disconnected")
         if self.clone:
             out = []
@@ -606,9 +795,17 @@ class Daemon:
                 reply = {"ok": True, "connected": bool(self.pad), "pressure": self.peak,
                          "clicked": bool(self.pad and self.clone and self.clicker.left),
                          "battery": self.battery(), "touches": self.touches(),
-                         "clicks": self.clicks, "forces": self.forces}
+                         "clicks": self.clicks, "forces": self.forces,
+                         "midi": {"playing": self.player is not None, "notes": self.midi_notes,
+                                  "pitch": self.midi_pitch}}
             elif not self.pad:
                 reply = {"ok": False, "error": "trackpad not connected"}
+            elif op == "play_midi":
+                self.play_midi(cmd["path"])
+                reply = {"ok": True}
+            elif op == "stop":
+                self.stop_midi()
+                reply = {"ok": True}
             elif op == "pulse":
                 value = cmd.get("value", "medium")
                 self.pad.pulse(PULSE[value] if value in PULSE else int(value, 0))

@@ -20,10 +20,18 @@ Item {
         return (Date.now() - epoch) / 1000;
     }
 
+    // A MIDI file was dropped on the field, or the field was clicked during playback
+    signal midiDropped(string path)
+    signal clicked()
+
     function ripple(force) {
         const t = touches.length > 0 ? touches[0] : { x: 0.5, y: 0.5 };
+        rippleAt(t.x, t.y, force);
+    }
+
+    function rippleAt(x, y, force) {
         const start = now();
-        shader["w" + nextWave] = Qt.vector4d(t.x * width, t.y * height, start, force ? 2 : 1);
+        shader["w" + nextWave] = Qt.vector4d(x * width, y * height, start, force ? 2 : 1);
         nextWave = (nextWave + 1) % 8;
         lastWaveEnd = Math.max(lastWaveEnd, start + (force ? 2.4 : 1.3));
         shader.time = start;
@@ -81,5 +89,22 @@ Item {
         property variant states: states
         property vector4d t0: shader.t0; property vector4d t1: shader.t1; property vector4d t2: shader.t2
         property vector4d t3: shader.t3; property vector4d t4: shader.t4
+    }
+
+    DropArea {
+        anchors.fill: parent
+        keys: ["text/uri-list"]
+        onEntered: drag => drag.accepted = drag.urls.some(u => /\.midi?$/i.test(u.toString()))
+        onDropped: drop => {
+            const url = drop.urls.find(u => /\.midi?$/i.test(u.toString()));
+            if (url) {
+                field.midiDropped(decodeURIComponent(url.toString().replace(/^file:\/\//, "")));
+                drop.accept();
+            }
+        }
+    }
+
+    TapHandler {
+        onTapped: field.clicked()
     }
 }

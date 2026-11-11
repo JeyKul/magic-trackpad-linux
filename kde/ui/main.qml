@@ -39,6 +39,7 @@ KCM.SimpleKCM {
     property var live: ({ connected: false, pressure: 0, clicked: false, battery: null, touches: [] })
     property int lastClicks: -1
     property int lastForces: -1
+    property int lastMidiNotes: -1
 
     readonly property bool ready: draft !== null
     readonly property bool hostMode: ready && draft.mode === "host"
@@ -138,6 +139,14 @@ KCM.SimpleKCM {
             }
             root.lastClicks = r.clicks;
             root.lastForces = r.forces;
+            // MIDI easter egg: every note ripples, placed left to right by pitch
+            if (r.midi) {
+                if (root.lastMidiNotes >= 0 && r.midi.notes > root.lastMidiNotes && Kirigami.Units.longDuration > 0) {
+                    const x = Math.min(0.92, Math.max(0.08, (r.midi.pitch - 24) / 48));
+                    field.rippleAt(x, 0.35 + 0.3 * ((r.midi.notes % 3) / 2), false);
+                }
+                root.lastMidiNotes = r.midi.notes;
+            }
         }
     }
 
@@ -410,6 +419,18 @@ KCM.SimpleKCM {
                 Layout.fillWidth: true
                 Layout.preferredHeight: width * 115 / 160
                 touches: root.live.touches || []
+                onMidiDropped: path => {
+                    const r = kcm.call({ op: "play_midi", path: path });
+                    if (!r.ok) {
+                        saveError.text = i18n("The file could not be played: %1", r.error);
+                        saveError.visible = true;
+                    }
+                }
+                onClicked: {
+                    if (root.live.midi && root.live.midi.playing) {
+                        kcm.call({ op: "stop" });
+                    }
+                }
                 Accessible.name: i18nc("@info accessible", "Live view of fingers on the trackpad")
             }
             QQC2.ProgressBar {

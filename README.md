@@ -163,6 +163,15 @@ Plasma, or the **Magic Trackpad** app elsewhere. Everything is also in
 `~/.config/mt2d/config.toml` (see `config.example.toml`); apply edits with
 `mt2d reload`.
 
+### Easter egg
+
+Drop a `.mid` file onto the live preview and keep a finger on the trackpad:
+its melody plays on the haptic motor, every note rippling across the field.
+Click the field to stop. The actuator can only click, so notes are pulse
+trains at their frequency, the same trick as
+[ForceTouchPlayer](https://github.com/danilofuchs/ForceTouchPlayer). Expect a
+recognisable rhythm and a rather buzzy idea of the pitch.
+
 ## Command line
 
 ```

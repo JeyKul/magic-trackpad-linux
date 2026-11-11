@@ -12,7 +12,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 from OpenGL import GL  # noqa: E402
 
 SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "mt2d.sock")
@@ -250,8 +250,11 @@ class TrackpadField(Gtk.GLArea):
 
     def ripple(self, force):
         t = self.touches[0] if self.touches else {"x": 0.5, "y": 0.5}
+        self.ripple_at(t["x"], t["y"], force)
+
+    def ripple_at(self, x, y, force):
         start = self.now()
-        self.waves[self.next_wave] = (t["x"] * self.get_width(), t["y"] * self.get_height(),
+        self.waves[self.next_wave] = (x * self.get_width(), y * self.get_height(),
                                       start, 2.0 if force else 1.0)
         self.next_wave = (self.next_wave + 1) % 8
         self.wave_end = max(self.wave_end, start + (2.4 if force else 1.3))
@@ -362,6 +365,15 @@ class Window(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
         self.field = TrackpadField()
+        # Easter egg: drop a MIDI file on the field to play it on the trackpad
+        drop = Gtk.DropTarget.new(Gio.File, Gdk.DragAction.COPY)
+        drop.connect("drop", self.on_midi_drop)
+        self.field.add_controller(drop)
+        click = Gtk.GestureClick()
+        click.connect("released", lambda *_: self.call({"op": "stop"}) if self.midi_playing else None)
+        self.field.add_controller(click)
+        self.midi_playing = False
+        self.midi_notes = None
         box.append(self.field)
         self.meter = Gtk.LevelBar(min_value=0, max_value=253, mode=Gtk.LevelBarMode.CONTINUOUS)
         self.meter.set_size_request(-1, 18)
@@ -476,6 +488,13 @@ class Window(Adw.ApplicationWindow):
             self.cfg = r["config"]
         return False
 
+    def on_midi_drop(self, _target, file, _x, _y):
+        path = file.get_path()
+        if not path or not path.lower().endswith((".mid", ".midi")):
+            return False
+        self.call({"op": "play_midi", "path": path})
+        return True
+
     def poll(self):
         r = self.daemon.call({"op": "live"})
         if not r.get("ok"):
@@ -494,6 +513,13 @@ class Window(Adw.ApplicationWindow):
             elif counters[0] > self.counters[0]:
                 self.field.ripple(False)
         self.counters = counters
+        midi = r.get("midi")
+        if midi:
+            self.midi_playing = midi["playing"]
+            if self.midi_notes is not None and midi["notes"] > self.midi_notes:
+                x = min(0.92, max(0.08, (midi["pitch"] - 24) / 48))
+                self.field.ripple_at(x, 0.35 + 0.15 * (midi["notes"] % 3), False)
+            self.midi_notes = midi["notes"]
         cfg = getattr(self, "cfg", None)
         if cfg:
             state = "clicked" if r["clicked"] else ""
