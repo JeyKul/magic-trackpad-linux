@@ -1,0 +1,8 @@
+post_install() {
+    udevadm control --reload
+    udevadm trigger -s hidraw
+    echo ">> Enable per user: systemctl --user enable --now mt2d"
+}
+post_upgrade() {
+    post_install
+}

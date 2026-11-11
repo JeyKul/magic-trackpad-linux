@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Magic Trackpad settings for GNOME and other GTK desktops (libadwaita)."""
+
+import json
+import os
+import socket
+import sys
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
+
+SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "mt2d.sock")
+
+STRENGTHS = [("light", "Light"), ("medium", "Medium"), ("firm", "Firm"),
+             ("max", "Maximum (loud)"), ("off", "Off")]
+ACTIONS = [
+    (["BTN_MIDDLE"], "Middle click"),
+    (["BTN_RIGHT"], "Right click"),
+    (["KEY_BACK"], "Back"),
+    (["KEY_FORWARD"], "Forward"),
+    (["KEY_LEFTMETA"], "Super key"),
+    (None, "Custom keys"),
+]
+
+
+class Daemon:
+    def call(self, cmd):
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        path = os.path.join(os.path.dirname(SOCKET_PATH), f"mt2d-gtk-{os.getpid()}.sock")
+        if os.path.exists(path):
+            os.unlink(path)
+        client.bind(path)
+        try:
+            client.settimeout(1.5)
+            client.sendto(json.dumps(cmd).encode(), SOCKET_PATH)
+            return json.loads(client.recv(65536))
+        except OSError as e:
+            return {"ok": False, "error": f"mt2d is not running ({e.strerror or e})"}
+        finally:
+            client.close()
+            os.unlink(path)
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Magic Trackpad", default_width=560,
+                         default_height=760)
+        self.daemon = Daemon()
+        self.loading = True
+        self.pending = {}
+        self.save_source = None
+
+        self.toasts = Adw.ToastOverlay()
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        page = Adw.PreferencesPage()
+        view.set_content(page)
+        self.toasts.set_child(view)
+        self.set_content(self.toasts)
+
+        # Device
+        dev = Adw.PreferencesGroup(title="Device")
+        page.add(dev)
+        self.device_row = Adw.ActionRow(title="Magic Trackpad", subtitle="Connecting…")
+        self.battery_label = Gtk.Label(css_classes=["dim-label"])
+        self.device_row.add_suffix(self.battery_label)
+        dev.add(self.device_row)
+
+        # Clicking
+        clicking = Adw.PreferencesGroup(
+            title="Clicking", description="Pressure clicking lets mt2d decide clicks from "
+            "the real force curve. Firmware clicking leaves it to the trackpad.")
+        page.add(clicking)
+        self.mode = Adw.ComboRow(title="Click mode",
+                                 model=Gtk.StringList.new(["Pressure",
+                                                           "Firmware"]))
+        self.mode.connect("notify::selected", self.on_mode)
+        clicking.add(self.mode)
+        self.click_force = self.scale_row(clicking, "Click force",
+                                          "Pressure needed to click", 40, 200, 5,
+                                          lambda v: {"click": {"threshold": v,
+                                                               "release": max(20, v - 30)}})
+        self.strength = Adw.ComboRow(title="Haptic feedback",
+                                     model=Gtk.StringList.new([n for _, n in STRENGTHS]))
+        self.strength.connect("notify::selected", lambda *_: self.queue(
+            {"haptics": {"strength": STRENGTHS[self.strength.get_selected()][0]}}))
+        clicking.add(self.strength)
+        self.silent = Adw.SwitchRow(title="Silent clicking",
+                                    subtitle="Click without haptic feedback")
+        self.silent.connect("notify::active", lambda *_: self.queue(
+            {"haptics": {"silent": self.silent.get_active()}}))
+        clicking.add(self.silent)
+        test = Adw.ActionRow(title="Test haptics")
+        for value, label in (("weak", "Weak"), ("medium", "Medium"), ("strong", "Strong")):
+            b = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+            b.connect("clicked", lambda _b, v=value: self.call({"op": "pulse", "value": v}))
+            test.add_suffix(b)
+        clicking.add(test)
+
+        # Force click
+        self.force_group = Adw.PreferencesGroup(
+            title="Force click", description="Press harder after clicking to trigger an action.")
+        page.add(self.force_group)
+        self.force_on = Adw.SwitchRow(title="Force click")
+        self.force_on.connect("notify::active", lambda *_: self.queue(
+            {"force_click": {"enabled": self.force_on.get_active()}}))
+        self.force_group.add(self.force_on)
+        self.force_force = self.scale_row(self.force_group, "Force click pressure", None,
+                                          150, 253, 1,
+                                          lambda v: {"force_click": {"threshold": v,
+                                                                     "release": max(100, v - 50)}})
+        self.action = Adw.ComboRow(title="Action",
+                                   model=Gtk.StringList.new([n for _, n in ACTIONS]))
+        self.action.connect("notify::selected", self.on_action)
+        self.force_group.add(self.action)
+        self.custom = Adw.EntryRow(title="Custom keys (evdev names, e.g. KEY_LEFTMETA KEY_W)",
+                                   show_apply_button=True, visible=False)
+        self.custom.connect("apply", self.on_custom)
+        self.force_group.add(self.custom)
+        self.replace = Adw.SwitchRow(title="Replace the normal click",
+                                     subtitle="Force click does not also left-click")
+        self.replace.connect("notify::active", lambda *_: self.queue(
+            {"force_click": {"replace_click": self.replace.get_active()}}))
+        self.force_group.add(self.replace)
+        self.dwell = Adw.SpinRow.new_with_range(0, 500, 10)
+        self.dwell.set_title("Hold time (ms)")
+        self.dwell.connect("notify::value", lambda *_: self.queue(
+            {"force_click": {"dwell_ms": int(self.dwell.get_value())}}))
+        self.force_group.add(self.dwell)
+
+        # Live pressure
+        live = Adw.PreferencesGroup(title="Pressure",
+                                    description="Press the trackpad to see the force it reads.")
+        page.add(live)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                      margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        self.meter = Gtk.LevelBar(min_value=0, max_value=253, mode=Gtk.LevelBarMode.CONTINUOUS)
+        self.meter.set_size_request(-1, 18)
+        self.meter_label = Gtk.Label(xalign=0, css_classes=["dim-label", "numeric"])
+        box.append(self.meter)
+        box.append(self.meter_label)
+        frame = Gtk.Frame(child=box)
+        live.add(frame)
+
+        self.load()
+        self.loading = False
+        GLib.timeout_add(50, self.poll)
+
+    def scale_row(self, group, title, subtitle, lo, hi, step, make):
+        row = Adw.ActionRow(title=title, subtitle=subtitle or "")
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, step)
+        scale.set_hexpand(True)
+        scale.set_size_request(220, -1)
+        scale.set_draw_value(True)
+        scale.set_value_pos(Gtk.PositionType.LEFT)
+        scale.connect("value-changed", lambda s: self.queue(make(int(s.get_value()))))
+        row.add_suffix(scale)
+        group.add(row)
+        return scale
+
+    def call(self, cmd):
+        r = self.daemon.call(cmd)
+        if not r.get("ok") and cmd["op"] != "live":
+            self.toasts.add_toast(Adw.Toast(title=r.get("error", "error")))
+        return r
+
+    def load(self):
+        r = self.call({"op": "get"})
+        if not r.get("ok"):
+            self.device_row.set_subtitle(r.get("error"))
+            return
+        c = r["config"]
+        self.cfg = c
+        self.mode.set_selected(0 if c["mode"] == "host" else 1)
+        self.click_force.set_value(c["click"]["threshold"])
+        self.strength.set_selected([k for k, _ in STRENGTHS].index(c["haptics"]["strength"]))
+        self.silent.set_active(c["haptics"]["silent"])
+        f = c["force_click"]
+        self.force_on.set_active(f["enabled"])
+        self.force_force.set_value(f["threshold"])
+        self.replace.set_active(f["replace_click"])
+        self.dwell.set_value(f["dwell_ms"])
+        idx = next((i for i, (keys, _) in enumerate(ACTIONS) if keys == f["action"]),
+                   len(ACTIONS) - 1)
+        self.action.set_selected(idx)
+        self.custom.set_text(" ".join(f["action"]))
+        self.custom.set_visible(ACTIONS[idx][0] is None)
+        self.update_mode_sensitivity()
+
+    def update_mode_sensitivity(self):
+        host = self.mode.get_selected() == 0
+        self.force_group.set_sensitive(host)
+        self.click_force.get_parent().set_sensitive(host)
+
+    def on_mode(self, *_):
+        self.update_mode_sensitivity()
+        self.queue({"mode": "host" if self.mode.get_selected() == 0 else "firmware"})
+
+    def on_action(self, *_):
+        keys = ACTIONS[self.action.get_selected()][0]
+        self.custom.set_visible(keys is None)
+        if keys:
+            self.queue({"force_click": {"action": keys}})
+
+    def on_custom(self, entry):
+        keys = entry.get_text().split()
+        if keys:
+            self.queue({"force_click": {"action": keys}})
+
+    def queue(self, change):
+        if self.loading:
+            return
+        for section, value in change.items():
+            if isinstance(value, dict):
+                self.pending.setdefault(section, {}).update(value)
+            else:
+                self.pending[section] = value
+        if self.save_source:
+            GLib.source_remove(self.save_source)
+        self.save_source = GLib.timeout_add(250, self.flush)
+
+    def flush(self):
+        self.save_source = None
+        change, self.pending = self.pending, {}
+        r = self.call({"op": "set", "config": change})
+        if r.get("ok"):
+            self.cfg = r["config"]
+        return False
+
+    def poll(self):
+        r = self.daemon.call({"op": "live"})
+        if not r.get("ok"):
+            self.device_row.set_subtitle(r.get("error"))
+            self.battery_label.set_text("")
+            return True
+        self.device_row.set_subtitle("Connected" if r["connected"] else "Not connected")
+        self.battery_label.set_text(f"Battery {r['battery']}%" if r["battery"] is not None else "")
+        p = r["pressure"]
+        self.meter.set_value(p)
+        cfg = getattr(self, "cfg", None)
+        if cfg:
+            state = "clicked" if r["clicked"] else ""
+            if cfg["mode"] == "host" and cfg["force_click"]["enabled"] \
+                    and p >= cfg["force_click"]["threshold"]:
+                state = "force"
+            self.meter_label.set_text(
+                f"{p:3d}   click at {cfg['click']['threshold']}, "
+                f"force at {cfg['force_click']['threshold']}   {state}")
+        return True
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="io.github.mt2d.Settings")
+
+    def do_activate(self):
+        (self.props.active_window or Window(self)).present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Description": "Click force, haptics and force click for the Apple Magic Trackpad 2",
+        "Icon": "input-touchpad",
+        "Name": "Magic Trackpad"
+    },
+    "X-KDE-Keywords": "trackpad,magic,apple,haptic,force touch,force click,pressure,click",
+    "X-KDE-System-Settings-Parent-Category": "pointing-devices",
+    "X-KDE-Weight": 70
+}

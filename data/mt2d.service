@@ -3,8 +3,8 @@ Description=Magic Trackpad 2 driver (haptics, click force, force click)
 After=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/bin/mt2d daemon
-ExecStopPost=%h/.local/bin/mt2d restore
+ExecStart=/usr/bin/mt2d daemon
+ExecStopPost=/usr/bin/mt2d restore
 Restart=on-failure
 RestartSec=2
 

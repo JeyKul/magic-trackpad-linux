@@ -119,6 +119,29 @@ def load_config():
     return cfg
 
 
+def toml_value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(toml_value(x) for x in v) + "]"
+    return json.dumps(str(v))
+
+
+def save_config(cfg):
+    lines = [f"{k} = {toml_value(v)}" for k, v in cfg.items() if not isinstance(v, dict)]
+    for section, values in cfg.items():
+        if isinstance(values, dict):
+            lines += ["", f"[{section}]"] + [f"{k} = {toml_value(v)}" for k, v in values.items()]
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("# Written by mt2d settings; see config.example.toml for documentation\n")
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, CONFIG_PATH)
+
+
 def feel(cfg):
     h = cfg["haptics"]
     click, release = STRENGTH[h["strength"]]
@@ -288,6 +311,7 @@ class Daemon:
         self.clone = None
         self.actions = None
         self.running = True
+        self.peak = 0
         if os.path.exists(SOCKET_PATH):
             os.unlink(SOCKET_PATH)
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -341,7 +365,7 @@ class Daemon:
             return False
         self.log(f"connected: {self.pad.dev.name} ({self.pad.hidraw_path}, {self.pad.dev.path})")
         self.clicker = Clicker(self)
-        self.pressure, self.pos, self.slot = {}, {}, 0
+        self.pressure, self.pos, self.slot, self.peak = {}, {}, 0, 0
         try:
             self.apply()
         except OSError as e:
@@ -390,8 +414,6 @@ class Daemon:
         self.actions.syn()
 
     def on_event(self, ev):
-        if not self.clone:
-            return
         if ev.type == ecodes.EV_ABS:
             if ev.code == ecodes.ABS_MT_SLOT:
                 self.slot = ev.value
@@ -404,26 +426,59 @@ class Daemon:
             elif ev.code == ecodes.ABS_MT_TRACKING_ID and ev.value == -1:
                 self.pressure.pop(self.slot, None)
                 self.pos.pop(self.slot, None)
-        elif ev.type == ecodes.EV_KEY and ev.code == ecodes.BTN_LEFT:
+        if not self.clone:
+            if ev.type == ecodes.EV_SYN and ev.code == ecodes.SYN_REPORT:
+                self.peak = max(self.pressure.values(), default=0)
+            return
+        if ev.type == ecodes.EV_KEY and ev.code == ecodes.BTN_LEFT:
             return  # the firmware's own button is ignored in host mode
         elif ev.type == ecodes.EV_SYN and ev.code == ecodes.SYN_REPORT:
             out = []
-            peak = max(self.pressure.values(), default=0)
+            peak = self.peak = max(self.pressure.values(), default=0)
             pos = self.pos.get(min(self.pos)) if self.pos else None
             self.clicker.frame(time.monotonic(), peak, pos, out)
             self.emit(out)
         self.clone.write_event(ev)
+
+    def battery(self):
+        if self.pad and self.pad.battery:
+            try:
+                with open(self.pad.battery) as f:
+                    return int(f.read())
+            except OSError:
+                pass
+        return None
+
+    def reload(self, cfg):
+        self.cfg = cfg
+        self.setup_actions()
+        if self.pad:
+            self.apply()
 
     def on_command(self, data, addr):
         try:
             cmd = json.loads(data)
             op = cmd["op"]
             if op == "reload":
-                self.cfg = load_config()
-                self.setup_actions()
-                if self.pad:
-                    self.apply()
+                self.reload(load_config())
                 reply = {"ok": True}
+            elif op == "get":
+                reply = {"ok": True, "config": self.cfg, "defaults": DEFAULT_CONFIG,
+                         "connected": bool(self.pad), "battery": self.battery(),
+                         "name": self.pad.dev.name if self.pad else None,
+                         "strengths": list(STRENGTH), "pulses": list(PULSE)}
+            elif op == "set":
+                cfg = merge(json.loads(json.dumps(self.cfg)), cmd["config"])
+                key_codes(cfg["force_click"]["action"])  # reject bad key names before saving
+                if cfg["mode"] not in ("host", "firmware") or cfg["haptics"]["strength"] not in STRENGTH:
+                    raise ValueError("invalid mode or strength")
+                save_config(cfg)
+                self.reload(cfg)
+                reply = {"ok": True, "config": self.cfg}
+            elif op == "live":
+                reply = {"ok": True, "connected": bool(self.pad), "pressure": self.peak,
+                         "clicked": bool(self.pad and self.clone and self.clicker.left),
+                         "battery": self.battery()}
             elif not self.pad:
                 reply = {"ok": False, "error": "trackpad not connected"}
             elif op == "pulse":
@@ -431,11 +486,7 @@ class Daemon:
                 self.pad.pulse(PULSE[value] if value in PULSE else int(value, 0))
                 reply = {"ok": True}
             elif op == "status":
-                battery = None
-                if self.pad.battery:
-                    with open(self.pad.battery) as f:
-                        battery = int(f.read())
-                reply = {"ok": True, "name": self.pad.dev.name, "battery": battery,
+                reply = {"ok": True, "name": self.pad.dev.name, "battery": self.battery(),
                          "hidraw": self.pad.hidraw_path, "event": self.pad.dev.path,
                          "config": self.cfg}
             else:

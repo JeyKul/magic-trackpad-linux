@@ -1,0 +1,28 @@
+# Build from a checkout: cd packaging/arch && makepkg -si
+pkgname=mt2d
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Magic Trackpad 2 driver: click force, haptics, force click, with KDE and GTK settings"
+arch=(x86_64)
+license=(MIT)
+depends=(python python-evdev)
+optdepends=('python-gobject: GTK settings app' 'libadwaita: GTK settings app'
+            'kcmutils: KDE System Settings module')
+makedepends=(cmake extra-cmake-modules kcmutils ki18n kcoreaddons qt6-declarative)
+install=mt2d.install
+
+build() {
+    cmake -S "$startdir/../../kde" -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -Wno-dev
+    cmake --build build
+}
+
+package() {
+    local src="$startdir/../.."
+    DESTDIR="$pkgdir" cmake --install build
+    install -Dm755 "$src/mt2d.py" "$pkgdir/usr/bin/mt2d"
+    install -Dm755 "$src/gtk/mt2d-settings" "$pkgdir/usr/bin/mt2d-settings"
+    install -Dm644 "$src/data/io.github.mt2d.Settings.desktop" "$pkgdir/usr/share/applications/io.github.mt2d.Settings.desktop"
+    install -Dm644 "$src/data/mt2d.service" "$pkgdir/usr/lib/systemd/user/mt2d.service"
+    install -Dm644 "$src/data/70-magic-trackpad.rules" "$pkgdir/usr/lib/udev/rules.d/70-magic-trackpad.rules"
+    install -Dm644 "$src/config.example.toml" "$pkgdir/usr/share/doc/mt2d/config.example.toml"
+}

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Magic Trackpad
+Comment=Click force, haptics and force click for the Apple Magic Trackpad 2
+Exec=mt2d-settings
+Icon=input-touchpad
+Categories=Settings;HardwareSettings;GTK;
+Keywords=trackpad;touchpad;haptic;force;click;apple;
+NotShowIn=KDE;
