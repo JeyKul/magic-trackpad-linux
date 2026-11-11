@@ -26,7 +26,9 @@ KCM.SimpleKCM {
     property var cfg: null
     property bool loading: true
     property var pending: ({})
-    property var live: ({ connected: false, pressure: 0, clicked: false, battery: null })
+    property var live: ({ connected: false, pressure: 0, clicked: false, battery: null, touches: [] })
+    property int lastClicks: -1
+    property int lastForces: -1
     readonly property bool hostMode: cfg !== null && cfg.mode === "host"
 
     function call(cmd) {
@@ -91,18 +93,25 @@ KCM.SimpleKCM {
     }
 
     Timer {
-        interval: 50
+        interval: 16
         running: true
         repeat: true
         onTriggered: {
             const r = kcm.call({ op: "live" });
             if (r.ok) {
                 root.live = r;
+                if (root.lastForces >= 0 && r.forces > root.lastForces) {
+                    field.ripple(true);
+                } else if (root.lastClicks >= 0 && r.clicks > root.lastClicks) {
+                    field.ripple(false);
+                }
+                root.lastClicks = r.clicks;
+                root.lastForces = r.forces;
                 if (root.cfg === null) {
                     root.load();
                 }
             } else {
-                root.live = { connected: false, pressure: 0, clicked: false, battery: null, error: r.error };
+                root.live = { connected: false, pressure: 0, clicked: false, battery: null, touches: [], error: r.error };
             }
         }
     }
@@ -251,7 +260,12 @@ KCM.SimpleKCM {
 
         ColumnLayout {
             Kirigami.FormData.label: i18n("Live:")
-            Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+            TrackpadField {
+                id: field
+                Layout.fillWidth: true
+                Layout.preferredHeight: width * 115 / 160
+                touches: root.live.touches || []
+            }
             QQC2.ProgressBar {
                 Layout.fillWidth: true
                 from: 0; to: 253

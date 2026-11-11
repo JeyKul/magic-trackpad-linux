@@ -257,6 +257,7 @@ class Clicker:
         if self.state == self.IDLE:
             if peak >= c["threshold"]:
                 self.d.pad.pulse(click)
+                self.d.clicks += 1
                 self.since, self.origin, self.force_since = now, pos, None
                 if force_on and fc["replace_click"]:
                     self.state = self.PENDING
@@ -287,6 +288,7 @@ class Clicker:
                     self.state = self.FORCED
                     self.d.pad.pulse(FORCE_PULSE if click & 0xFFFF00 else 0)
                     self.d.force_action()
+                    self.d.forces += 1
                     self.d.log(f"force click (pressure {peak})")
                     return
             else:
@@ -312,6 +314,7 @@ class Daemon:
         self.actions = None
         self.running = True
         self.peak = 0
+        self.clicks = self.forces = 0  # event counters, so polling UIs never miss a click
         if os.path.exists(SOCKET_PATH):
             os.unlink(SOCKET_PATH)
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -427,7 +430,9 @@ class Daemon:
                 self.pressure.pop(self.slot, None)
                 self.pos.pop(self.slot, None)
         if not self.clone:
-            if ev.type == ecodes.EV_SYN and ev.code == ecodes.SYN_REPORT:
+            if ev.type == ecodes.EV_KEY and ev.code == ecodes.BTN_LEFT and ev.value:
+                self.clicks += 1
+            elif ev.type == ecodes.EV_SYN and ev.code == ecodes.SYN_REPORT:
                 self.peak = max(self.pressure.values(), default=0)
             return
         if ev.type == ecodes.EV_KEY and ev.code == ecodes.BTN_LEFT:
@@ -448,6 +453,17 @@ class Daemon:
             except OSError:
                 pass
         return None
+
+    def touches(self):
+        """Fingers as x/y in 0..1 (origin top left) plus pressure."""
+        if not self.pad:
+            return []
+        ax = self.pad.dev.absinfo(ecodes.ABS_MT_POSITION_X)
+        ay = self.pad.dev.absinfo(ecodes.ABS_MT_POSITION_Y)
+        return [{"x": round((x - ax.min) / (ax.max - ax.min), 4),
+                 "y": round((y - ay.min) / (ay.max - ay.min), 4),
+                 "p": self.pressure.get(slot, 0)}
+                for slot, (x, y) in self.pos.items()]
 
     def reload(self, cfg):
         self.cfg = cfg
@@ -478,7 +494,8 @@ class Daemon:
             elif op == "live":
                 reply = {"ok": True, "connected": bool(self.pad), "pressure": self.peak,
                          "clicked": bool(self.pad and self.clone and self.clicker.left),
-                         "battery": self.battery()}
+                         "battery": self.battery(), "touches": self.touches(),
+                         "clicks": self.clicks, "forces": self.forces}
             elif not self.pad:
                 reply = {"ok": False, "error": "trackpad not connected"}
             elif op == "pulse":

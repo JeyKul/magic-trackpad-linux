@@ -2,15 +2,20 @@
 """Magic Trackpad settings for GNOME and other GTK desktops (libadwaita)."""
 
 import json
+import math
 import os
 import socket
 import sys
+import time
 
+import cairo
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
+
+ACCENT = (0.24, 0.56, 0.98)
 
 SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "mt2d.sock")
 
@@ -27,21 +32,132 @@ ACTIONS = [
 
 
 class Daemon:
+    def __init__(self):
+        self.path = os.path.join(os.path.dirname(SOCKET_PATH), f"mt2d-gtk-{os.getpid()}.sock")
+        if os.path.exists(self.path):
+            os.unlink(self.path)
+        self.client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.client.bind(self.path)
+
+    def close(self):
+        self.client.close()
+        os.unlink(self.path)
+
     def call(self, cmd):
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        path = os.path.join(os.path.dirname(SOCKET_PATH), f"mt2d-gtk-{os.getpid()}.sock")
-        if os.path.exists(path):
-            os.unlink(path)
-        client.bind(path)
+        # Drop late replies to earlier calls that timed out
+        self.client.setblocking(False)
         try:
-            client.settimeout(1.5)
-            client.sendto(json.dumps(cmd).encode(), SOCKET_PATH)
-            return json.loads(client.recv(65536))
+            while self.client.recv(65536):
+                pass
+        except BlockingIOError:
+            pass
+        try:
+            self.client.settimeout(1.5)
+            self.client.sendto(json.dumps(cmd).encode(), SOCKET_PATH)
+            return json.loads(self.client.recv(65536))
         except OSError as e:
             return {"ok": False, "error": f"mt2d is not running ({e.strerror or e})"}
-        finally:
-            client.close()
-            os.unlink(path)
+
+
+class TrackpadField(Gtk.DrawingArea):
+    """Live view of the trackpad: fingers glow, a click sends out a small dotted
+    ripple, a force click a bigger multi-ring one, all clipped to the field."""
+
+    def __init__(self):
+        super().__init__(hexpand=True)
+        self.touches = []
+        self.waves = []
+        self.ticking = False
+        self.set_draw_func(self.draw)
+        self.connect("resize", lambda _w, width, _h: self.set_content_height(int(width * 115 / 160)))
+        self.set_content_height(300)
+
+    def set_touches(self, touches):
+        if touches or self.touches:
+            self.touches = touches
+            self.queue_draw()
+
+    def ripple(self, force):
+        t = self.touches[0] if self.touches else {"x": 0.5, "y": 0.5}
+        now = time.monotonic()
+        if force:
+            for i in range(3):
+                self.waves.append(dict(x=t["x"], y=t["y"], start=now + i * 0.19, duration=1.2,
+                                       reach=0.95, dot=2.6))
+        else:
+            self.waves.append(dict(x=t["x"], y=t["y"], start=now, duration=0.65, reach=0.28, dot=1.8))
+        if not self.ticking:
+            self.ticking = True
+            self.add_tick_callback(self.tick)
+
+    def tick(self, *_):
+        self.queue_draw()
+        if not self.waves:
+            self.ticking = False
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+
+    @staticmethod
+    def rounded(cr, x, y, w, h, r):
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+        cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+        cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+        cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+        cr.close_path()
+
+    def draw(self, _area, cr, w, h):
+        fg = self.get_color()
+        self.rounded(cr, 0.5, 0.5, w - 1, h - 1, w * 0.06)
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.05)
+        cr.fill_preserve()
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.15)
+        cr.set_line_width(1)
+        cr.stroke_preserve()
+        cr.clip()
+
+        # Faint dot grid
+        cr.set_source_rgba(*ACCENT, 0.22)
+        step = max(12, w / 28)
+        gx = step / 2
+        while gx < w:
+            gy = step / 2
+            while gy < h:
+                cr.rectangle(gx - 1, gy - 1, 2, 2)
+                gy += step
+            gx += step
+        cr.fill()
+
+        # Ripples: rings made of dots, eased out and fading
+        now = time.monotonic()
+        self.waves = [wv for wv in self.waves if now - wv["start"] < wv["duration"]]
+        for wv in self.waves:
+            age = now - wv["start"]
+            if age < 0:
+                continue
+            t = age / wv["duration"]
+            r = 6 + (1 - (1 - t) ** 2) * wv["reach"] * w
+            n = max(12, int(2 * math.pi * r / 9))
+            dot = wv["dot"] * (1 - 0.4 * t)
+            cr.set_source_rgba(*ACCENT, (1 - t) ** 1.4 * 0.9)
+            for i in range(n):
+                ang = i / n * 2 * math.pi
+                cx, cy = wv["x"] * w + math.cos(ang) * r, wv["y"] * h + math.sin(ang) * r
+                cr.new_sub_path()
+                cr.arc(cx, cy, dot, 0, 2 * math.pi)
+            cr.fill()
+
+        # Fingers: soft glow growing with pressure
+        for touch in self.touches:
+            x, y = touch["x"] * w, touch["y"] * h
+            r = 10 + touch["p"] / 253 * 22
+            g = cairo.RadialGradient(x, y, 0, x, y, r)
+            g.add_color_stop_rgba(0, *ACCENT, 0.85)
+            g.add_color_stop_rgba(0.35, *ACCENT, 0.45)
+            g.add_color_stop_rgba(1, *ACCENT, 0)
+            cr.set_source(g)
+            cr.arc(x, y, r, 0, 2 * math.pi)
+            cr.fill()
 
 
 class Window(Adw.ApplicationWindow):
@@ -133,10 +249,12 @@ class Window(Adw.ApplicationWindow):
 
         # Live pressure
         live = Adw.PreferencesGroup(title="Pressure",
-                                    description="Press the trackpad to see the force it reads.")
+                                    description="Touch, click and force click to see what the trackpad reads.")
         page.add(live)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        self.field = TrackpadField()
+        box.append(self.field)
         self.meter = Gtk.LevelBar(min_value=0, max_value=253, mode=Gtk.LevelBarMode.CONTINUOUS)
         self.meter.set_size_request(-1, 18)
         self.meter_label = Gtk.Label(xalign=0, css_classes=["dim-label", "numeric"])
@@ -147,7 +265,9 @@ class Window(Adw.ApplicationWindow):
 
         self.load()
         self.loading = False
-        GLib.timeout_add(50, self.poll)
+        self.counters = None
+        GLib.timeout_add(16, self.poll)
+        self.connect("close-request", lambda *_: self.daemon.close())
 
     def scale_row(self, group, title, subtitle, lo, hi, step, make):
         row = Adw.ActionRow(title=title, subtitle=subtitle or "")
@@ -240,6 +360,14 @@ class Window(Adw.ApplicationWindow):
         self.battery_label.set_text(f"Battery {r['battery']}%" if r["battery"] is not None else "")
         p = r["pressure"]
         self.meter.set_value(p)
+        self.field.set_touches(r.get("touches", []))
+        counters = (r.get("clicks", 0), r.get("forces", 0))
+        if self.counters:
+            if counters[1] > self.counters[1]:
+                self.field.ripple(True)
+            elif counters[0] > self.counters[0]:
+                self.field.ripple(False)
+        self.counters = counters
         cfg = getattr(self, "cfg", None)
         if cfg:
             state = "clicked" if r["clicked"] else ""
