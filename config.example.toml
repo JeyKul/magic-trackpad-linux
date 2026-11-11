@@ -1,0 +1,23 @@
+# ~/.config/mt2d/config.toml  —  apply with: mt2d reload
+
+# host: mt2d decides clicks from pressure (click force, force click)
+# firmware: trackpad clicks by itself, mt2d only sets the haptic feel
+mode = "host"
+
+[haptics]
+strength = "medium"   # light | medium | firm | max | off
+silent = false        # click without haptic feedback
+
+[click]
+threshold = 90        # pressure (0..253) needed to click
+release = 60          # pressure below which the click lets go
+
+[force_click]
+enabled = true
+threshold = 250       # pressure for a force click...
+dwell_ms = 60         # ...held this long
+release = 200         # drop below this to force click again
+replace_click = true  # force click replaces the left click instead of adding to it
+pending_ms = 150      # left click is held back this long to allow that
+pending_motion = 40   # moving the finger commits the left click early (drags)
+action = ["BTN_MIDDLE"]   # any evdev key names, e.g. ["KEY_LEFTMETA", "KEY_W"]

@@ -1,0 +1,5 @@
+# Magic Trackpad 2 (Lightning + USB-C), USB and Bluetooth: let the logged-in user drive haptics via hidraw
+KERNEL=="hidraw*", KERNELS=="0003:05AC:0265.*", TAG+="uaccess"
+KERNEL=="hidraw*", KERNELS=="0003:05AC:0324.*", TAG+="uaccess"
+KERNEL=="hidraw*", KERNELS=="0005:004C:0265.*", TAG+="uaccess"
+KERNEL=="hidraw*", KERNELS=="0005:004C:0324.*", TAG+="uaccess"
