@@ -392,9 +392,14 @@ class Daemon:
     # -- device lifecycle -------------------------------------------------
 
     def setup_actions(self):
+        action = key_codes(self.cfg["force_click"]["action"])
+        # Creating a uinput device can take seconds (it waits for udev), so only
+        # when the action really changed
+        if self.actions and action == self.action:
+            return
         if self.actions:
             self.actions.close()
-        self.action = key_codes(self.cfg["force_click"]["action"])
+        self.action = action
         self.actions = evdev.UInput({ecodes.EV_KEY: self.action}, name="mt2d force click")
 
     def apply(self):
@@ -431,10 +436,15 @@ class Daemon:
         try:
             self.pad = find_trackpad()
         except PermissionError as e:
-            # Typically the udev rule is missing; keep waiting instead of crash-looping
+            # The udev rule is missing, or a just-plugged device is still being set
+            # up by udev; keep waiting instead of crash-looping
             if not self.warned:
-                self.log(f"no access to {e.filename}: install the udev rule (see README)")
+                self.log(f"no access to {e.filename} yet (is the udev rule installed?)")
                 self.warned = True
+            return False
+        except OSError as e:
+            # The device vanished while we were opening it
+            self.log(f"trackpad not ready: {e}")
             return False
         self.warned = False
         if not self.pad:
@@ -584,7 +594,10 @@ class Daemon:
         except Exception as e:  # never let a bad command kill the daemon
             reply = {"ok": False, "error": str(e)}
         if addr:
-            self.sock.sendto(json.dumps(reply).encode(), addr)
+            try:
+                self.sock.sendto(json.dumps(reply).encode(), addr)
+            except OSError:
+                pass  # the client gave up waiting; nothing to deliver
 
     def run(self):
         def stop(*_):
@@ -642,11 +655,11 @@ def restore():
     """Put the firmware back in charge of clicking (used by systemd after a crash)."""
     try:
         pad = find_trackpad()
-    except PermissionError:
-        return
-    if pad:
-        pad.host_click(False)
-        pad.close()
+        if pad:
+            pad.host_click(False)
+            pad.close()
+    except OSError:
+        pass  # gone or not accessible: then the firmware is in charge anyway
 
 
 def monitor():

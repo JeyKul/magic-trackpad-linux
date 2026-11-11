@@ -64,7 +64,9 @@ public:
         sockaddr_un remote{};
         remote.sun_family = AF_UNIX;
         qstrncpy(remote.sun_path, server.constData(), sizeof(remote.sun_path));
-        timeval timeout{1, 500000};
+        // Applying settings may touch slow hardware; polling should fail fast
+        const bool polling = command.value(QStringLiteral("op")) == QLatin1String("live");
+        timeval timeout = polling ? timeval{1, 500000} : timeval{5, 0};
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
         QVariantMap reply;

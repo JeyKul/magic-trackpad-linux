@@ -50,7 +50,8 @@ class Daemon:
         except BlockingIOError:
             pass
         try:
-            self.client.settimeout(1.5)
+            # Applying settings may touch slow hardware; polling should fail fast
+            self.client.settimeout(1.5 if cmd["op"] == "live" else 5)
             self.client.sendto(json.dumps(cmd).encode(), SOCKET_PATH)
             return json.loads(self.client.recv(65536))
         except OSError as e:
@@ -271,6 +272,7 @@ class Window(Adw.ApplicationWindow):
         self.daemon = Daemon()
         self.loading = True
         self.pending = {}
+        self.dragging = False
         self.save_source = None
 
         self.toasts = Adw.ToastOverlay()
@@ -376,6 +378,10 @@ class Window(Adw.ApplicationWindow):
         scale.set_draw_value(True)
         scale.set_value_pos(Gtk.PositionType.LEFT)
         scale.connect("value-changed", lambda s: self.queue(make(int(s.get_value()))))
+        # Apply once the slider is let go, not on every step while dragging
+        legacy = Gtk.EventControllerLegacy(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        legacy.connect("event", self.on_scale_event)
+        scale.add_controller(legacy)
         row.add_suffix(scale)
         group.add(row)
         return scale
@@ -428,6 +434,21 @@ class Window(Adw.ApplicationWindow):
         if keys:
             self.queue({"force_click": {"action": keys}})
 
+    def on_scale_event(self, _controller, event):
+        kind = event.get_event_type()
+        if kind in (Gdk.EventType.BUTTON_PRESS, Gdk.EventType.TOUCH_BEGIN):
+            self.dragging = True
+        elif kind in (Gdk.EventType.BUTTON_RELEASE, Gdk.EventType.TOUCH_END, Gdk.EventType.TOUCH_CANCEL):
+            self.dragging = False
+            if self.pending:
+                self.schedule_flush(0)
+        return False  # let the slider handle the event too
+
+    def schedule_flush(self, delay):
+        if self.save_source:
+            GLib.source_remove(self.save_source)
+        self.save_source = GLib.timeout_add(delay, self.flush)
+
     def queue(self, change):
         if self.loading:
             return
@@ -436,9 +457,8 @@ class Window(Adw.ApplicationWindow):
                 self.pending.setdefault(section, {}).update(value)
             else:
                 self.pending[section] = value
-        if self.save_source:
-            GLib.source_remove(self.save_source)
-        self.save_source = GLib.timeout_add(250, self.flush)
+        if not self.dragging:
+            self.schedule_flush(250)
 
     def flush(self):
         self.save_source = None
