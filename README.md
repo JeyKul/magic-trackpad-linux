@@ -26,8 +26,8 @@ Free and open source. Runs in userspace next to the in-kernel
   rejection, pointer speed) stays with libinput and your desktop's own
   touchpad settings, exactly as before
 
-Bluetooth Magic Trackpad 2 is what it's developed and tested on. USB and the
-USB-C model are recognised but untested; reports welcome.
+Tested with the Lightning Magic Trackpad 2 over Bluetooth and USB. The USB-C
+model is recognised but untested; reports welcome.
 
 ## How it works
 
@@ -48,9 +48,16 @@ back to clicking on its own.
 
 | Report | Purpose |
 |---|---|
-| feature `F2 21 01/00` | host-click mode on/off |
-| feature `F2 22 …` / `F2 23 …` | stored click / release feel (`0xCCBBSS`) |
-| output `F2 53 …` via SET_REPORT | fire the actuator once |
+| feature `21 01/00` | host-click mode on/off |
+| feature `22 …` / `23 …` | stored click / release feel (`0xCCBBSS`) |
+| output `53 …` | fire the actuator once |
+
+Over Bluetooth these go to the single HID interface, wrapped in report `F2`,
+and the actuator report must be sent as a SET_REPORT. Over USB the trackpad
+splits into four interfaces: touches arrive on interface 1, the battery on
+interface 0, and the reports above go unwrapped to interface 2 (the one
+declaring output report `0x53`), with the actuator report as a plain
+interrupt write.
 
 The live preview is a two-pass fragment shader: pass 1 computes each dot's
 light and displacement once into a tiny texture, pass 2 shades pixels from

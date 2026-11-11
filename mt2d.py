@@ -152,11 +152,18 @@ def feel(cfg):
 
 
 class Trackpad:
-    def __init__(self, hidraw, event, battery):
-        self.hidraw_path = hidraw
-        self.hid = os.open(hidraw, os.O_RDWR)
+    """One physical trackpad. Over Bluetooth everything goes through a single
+    HID interface and vendor reports are wrapped in report 0xF2. Over USB the
+    trackpad splits into several interfaces: touches arrive on one, and the
+    same vendor reports, unwrapped, go to the interface that declares the 0x53
+    haptic output report."""
+
+    def __init__(self, control, event, battery, usb):
+        self.hidraw_path = control
+        self.hid = os.open(control, os.O_RDWR)
         self.dev = evdev.InputDevice(event)
         self.battery = battery
+        self.usb = usb
         self.pulses = queue.Queue()
         # Each pulse is a SET_REPORT round trip over Bluetooth; keep it off the event loop
         threading.Thread(target=self._pulse_worker, daemon=True).start()
@@ -169,7 +176,12 @@ class Trackpad:
             except OSError:
                 pass
 
+    def report(self, buf):
+        """Bluetooth framing (0xF2 + payload) to the framing of this transport."""
+        return buf[1:] if self.usb else buf
+
     def set_feature(self, buf):
+        buf = self.report(buf)
         fcntl.ioctl(self.hid, HIDIOCSFEATURE(len(buf)), buf)
 
     def host_click(self, on):
@@ -187,7 +199,13 @@ class Trackpad:
         # Cap the amplifier bytes like the Windows driver: higher is hardware-stress territory
         value = (value & 0xFF) | min((value >> 8) & 0xFF, 0x20) << 8 | min((value >> 16) & 0xFF, 0x40) << 16
         buf = haptic_report(0x53, value, 0x12)
-        fcntl.ioctl(self.hid, HIDIOCSOUTPUT(len(buf)), buf)
+        if self.usb:
+            # USB: interrupt OUT report; byte 8 mirrors the second amplifier byte (as on Windows)
+            buf = bytearray(self.report(buf))
+            buf[8] = buf[10]
+            os.write(self.hid, bytes(buf))
+        else:
+            fcntl.ioctl(self.hid, HIDIOCSOUTPUT(len(buf)), buf)
 
     def _pulse_worker(self):
         while (value := self.pulses.get()) is not None:
@@ -197,26 +215,54 @@ class Trackpad:
                 pass
 
 
-def hid_ids(hid_sysfs):
+def hid_uevent(hid_sysfs):
     with open(os.path.join(hid_sysfs, "uevent")) as f:
-        for line in f:
-            if line.startswith("HID_ID="):
-                return tuple(int(x, 16) for x in line.strip()[7:].split(":"))
-    return None
+        return dict(line.strip().split("=", 1) for line in f if "=" in line)
+
+
+def hid_ids(hid_sysfs):
+    return tuple(int(x, 16) for x in hid_uevent(hid_sysfs)["HID_ID"].split(":"))
+
+
+def has_report(hid_sysfs, pattern):
+    try:
+        with open(os.path.join(hid_sysfs, "report_descriptor"), "rb") as f:
+            return pattern in f.read()
+    except OSError:
+        return False
 
 
 def find_trackpad():
-    for hidraw in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+    # Group hidraw nodes by physical device: USB interfaces share the PHYS prefix
+    devices = {}
+    for hidraw in sorted(glob.glob("/sys/class/hidraw/hidraw*"),
+                         key=lambda p: int(p.rsplit("hidraw", 1)[1])):
         hid = os.path.realpath(os.path.join(hidraw, "device"))
-        if hid_ids(hid) not in SUPPORTED:
+        try:
+            if hid_ids(hid) not in SUPPORTED:
+                continue
+            phys = hid_uevent(hid).get("HID_PHYS", hid).split("/input")[0]
+        except (OSError, KeyError, ValueError):
             continue
-        events = glob.glob(os.path.join(hid, "input", "input*", "event*"))
-        if not events:
+        devices.setdefault(phys, []).append((hidraw, hid))
+
+    for nodes in devices.values():
+        # Touches come from the interface with the 0x02 touch report
+        touch = control = event = battery = None
+        for hidraw, hid in nodes:
+            events = glob.glob(os.path.join(hid, "input", "input*", "event*"))
+            if events and (touch is None or has_report(hid, b"\x85\x02")):
+                touch, event = hidraw, events[0]
+            if has_report(hid, b"\x85\x53\x95") or has_report(hid, b"\x85\x53\x96"):
+                control = hidraw
+            batteries = glob.glob(os.path.join(hid, "power_supply", "*", "capacity"))
+            battery = battery or (batteries[0] if batteries else None)
+        if not event:
             continue
-        batteries = glob.glob(os.path.join(hid, "power_supply", "*", "capacity"))
-        return Trackpad("/dev/" + os.path.basename(hidraw),
-                        "/dev/input/" + os.path.basename(events[0]),
-                        batteries[0] if batteries else None)
+        usb = control is not None
+        control = control or touch
+        return Trackpad("/dev/" + os.path.basename(control),
+                        "/dev/input/" + os.path.basename(event), battery, usb)
     return None
 
 
