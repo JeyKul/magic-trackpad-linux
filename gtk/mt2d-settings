@@ -17,6 +17,8 @@ from OpenGL import GL  # noqa: E402
 
 SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "mt2d.sock")
 
+RELEASES = [("auto", "Match haptic feedback"), ("firm", "Firm"), ("medium", "Medium"),
+            ("light", "Light"), ("off", "Off")]
 STRENGTHS = [("light", "Light"), ("medium", "Medium"), ("firm", "Firm"),
              ("max", "Maximum (loud)"), ("off", "Off (silent clicks)")]
 ACTIONS = [
@@ -310,6 +312,11 @@ class Window(Adw.ApplicationWindow):
         self.strength.connect("notify::selected", lambda *_: self.queue(
             {"haptics": {"strength": STRENGTHS[self.strength.get_selected()][0], "silent": False}}))
         clicking.add(self.strength)
+        self.release = Adw.ComboRow(title="Release click",
+                                    model=Gtk.StringList.new([n for _, n in RELEASES]))
+        self.release.connect("notify::selected", lambda *_: self.queue(
+            {"haptics": {"release": RELEASES[self.release.get_selected()][0]}}))
+        clicking.add(self.release)
         test = Adw.ActionRow(title="Test haptics")
         for value, label in (("weak", "Weak"), ("medium", "Medium"), ("strong", "Strong")):
             b = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
@@ -402,6 +409,7 @@ class Window(Adw.ApplicationWindow):
         self.mode.set_selected(0 if c["mode"] == "host" else 1)
         self.click_force.set_value(c["click"]["threshold"])
         self.strength.set_selected([k for k, _ in STRENGTHS].index(c["haptics"]["strength"]))
+        self.release.set_selected([k for k, _ in RELEASES].index(c["haptics"].get("release", "auto")))
         f = c["force_click"]
         self.force_on.set_active(f["enabled"])
         self.force_force.set_value(f["threshold"])

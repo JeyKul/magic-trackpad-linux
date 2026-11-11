@@ -6,6 +6,7 @@ mode = "host"
 
 [haptics]
 strength = "medium"   # light | medium | firm | max | off
+release = "auto"     # release click: auto (follows strength) | off | light | medium | firm
 silent = false        # click without haptic feedback
 
 [click]

@@ -78,7 +78,7 @@ PULSE = {"weak": 0x040415, "medium": 0x060617, "strong": 0x08081E, "max": 0x2020
 
 DEFAULT_CONFIG = {
     "mode": "host",
-    "haptics": {"strength": "medium", "silent": False},
+    "haptics": {"strength": "medium", "release": "auto", "silent": False},
     "click": {
         "threshold": 90,        # peak pressure (0..253) that clicks
         "release": 60,          # pressure below which the click releases
@@ -159,13 +159,28 @@ def save_config(cfg):
     os.replace(tmp, CONFIG_PATH)
 
 
+# Release feel on its own; "auto" follows the click strength preset
+RELEASE = {
+    "off":    0x000000,
+    "light":  0x000010,
+    "medium": 0x000014,
+    "firm":   0x020218,
+}
+
+
 def silent(cfg):
     return cfg["haptics"]["strength"] == "off" or cfg["haptics"].get("silent", False)
+
+
+def silent_release(cfg):
+    return silent(cfg) or cfg["haptics"].get("release", "auto") == "off"
 
 
 def feel(cfg):
     h = cfg["haptics"]
     click, release = STRENGTH[h["strength"]]
+    if h.get("release", "auto") != "auto":
+        release = RELEASE[h["release"]]
     if h.get("silent"):
         click &= 0xFF
         release &= 0xFF
@@ -345,7 +360,7 @@ class Clicker:
                 self.set_left(out, True)
                 out.append(None)
             self.set_left(out, False)
-            if not silent(cfg):
+            if not silent_release(cfg):
                 self.d.pad.pulse(release)
             self.state = self.IDLE
             return
@@ -576,11 +591,13 @@ class Daemon:
                 reply = {"ok": True, "config": self.cfg, "defaults": DEFAULT_CONFIG,
                          "connected": bool(self.pad), "battery": self.battery(),
                          "name": self.pad.dev.name if self.pad else None,
-                         "strengths": list(STRENGTH), "pulses": list(PULSE)}
+                         "strengths": list(STRENGTH), "releases": ["auto", *RELEASE],
+                         "pulses": list(PULSE)}
             elif op == "set":
                 cfg = merge(json.loads(json.dumps(self.cfg)), cmd["config"])
                 key_codes(cfg["force_click"]["action"])  # reject bad key names before saving
-                if cfg["mode"] not in ("host", "firmware") or cfg["haptics"]["strength"] not in STRENGTH:
+                if (cfg["mode"] not in ("host", "firmware") or cfg["haptics"]["strength"] not in STRENGTH
+                        or cfg["haptics"]["release"] not in ("auto", *RELEASE)):
                     raise ValueError("invalid mode or strength")
                 save_config(cfg)
                 self.reload(cfg)

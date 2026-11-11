@@ -14,6 +14,13 @@ KCM.SimpleKCM {
         { key: "max", label: i18nc("@item:inlistbox haptic feedback strength", "Maximum (loud)") },
         { key: "off", label: i18nc("@item:inlistbox haptic feedback strength", "Off (silent clicks)") },
     ]
+    readonly property var releases: [
+        { key: "auto", label: i18nc("@item:inlistbox release click", "Match haptic feedback") },
+        { key: "firm", label: i18nc("@item:inlistbox release click", "Firm") },
+        { key: "medium", label: i18nc("@item:inlistbox release click", "Medium") },
+        { key: "light", label: i18nc("@item:inlistbox release click", "Light") },
+        { key: "off", label: i18nc("@item:inlistbox release click", "Off") },
+    ]
     readonly property var actions: [
         { keys: ["BTN_MIDDLE"], label: i18nc("@item:inlistbox force click action", "Middle click") },
         { keys: ["BTN_RIGHT"], label: i18nc("@item:inlistbox force click action", "Right click") },
@@ -269,6 +276,15 @@ KCM.SimpleKCM {
                 }
             }
             KCM.SettingHighlighter { highlight: !root.isDefault("haptics", "strength") }
+        }
+
+        QQC2.ComboBox {
+            Kirigami.FormData.label: i18nc("@label:listbox", "Release click:")
+            enabled: root.ready && root.draft.haptics.strength !== "off"
+            model: root.releases.map(r => r.label)
+            currentIndex: root.ready ? Math.max(0, root.releases.findIndex(r => r.key === (root.draft.haptics.release || "auto"))) : 0
+            onActivated: index => root.changeDraft("haptics", "release", root.releases[index].key)
+            KCM.SettingHighlighter { highlight: !root.isDefault("haptics", "release") }
         }
 
         RowLayout {
