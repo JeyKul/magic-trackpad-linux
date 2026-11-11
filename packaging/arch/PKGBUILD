@@ -12,7 +12,7 @@ makedepends=(cmake extra-cmake-modules kcmutils ki18n kcoreaddons qt6-declarativ
 install=mt2d.install
 
 build() {
-    cmake -S "$startdir/../../kde" -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -Wno-dev
+    cmake -S "$startdir/../../kde" -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
     cmake --build build
 }
 

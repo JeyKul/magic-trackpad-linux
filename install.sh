@@ -21,7 +21,7 @@ fi
 case "$XDG_CURRENT_DESKTOP" in
 *KDE*)
     build=$(mktemp -d)
-    cmake -S kde -B "$build" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -Wno-dev >/dev/null
+    cmake -S kde -B "$build" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release >/dev/null
     cmake --build "$build" -j"$(nproc)" >/dev/null
     sudo cmake --install "$build" >/dev/null
     rm -rf "$build"
