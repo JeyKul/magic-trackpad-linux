@@ -47,17 +47,39 @@ Item {
         onTriggered: shader.time = field.now()
     }
 
+    // Pass 1: one texel per dot (waves, fingers), rendered into a tiny texture
     ShaderEffect {
         id: shader
-        anchors.fill: parent
-        blending: true
-        fragmentShader: "qrc:/mt2d/ripple.frag.qsb"
+        width: Math.ceil(field.width / 6) + 1
+        height: Math.ceil(field.height / 6) + 1
+        blending: false
+        fragmentShader: "qrc:/mt2d/ripple_state.frag.qsb"
 
-        property size fieldSize: Qt.size(width, height)
+        property size fieldSize: Qt.size(field.width, field.height)
         property real time: 0
         property vector4d w0; property vector4d w1; property vector4d w2; property vector4d w3
         property vector4d w4; property vector4d w5; property vector4d w6; property vector4d w7
         property vector4d t0; property vector4d t1; property vector4d t2; property vector4d t3
         property vector4d t4
+    }
+
+    ShaderEffectSource {
+        id: states
+        sourceItem: shader
+        hideSource: true
+        smooth: false
+        textureSize: Qt.size(shader.width, shader.height)
+    }
+
+    // Pass 2: per pixel, reads the 3x3 nearest dots
+    ShaderEffect {
+        anchors.fill: parent
+        blending: true
+        fragmentShader: "qrc:/mt2d/ripple.frag.qsb"
+
+        property size fieldSize: Qt.size(width, height)
+        property variant states: states
+        property vector4d t0: shader.t0; property vector4d t1: shader.t1; property vector4d t2: shader.t2
+        property vector4d t3: shader.t3; property vector4d t4: shader.t4
     }
 }

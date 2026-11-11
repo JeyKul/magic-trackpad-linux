@@ -2,6 +2,7 @@
 """Magic Trackpad settings for GNOME and other GTK desktops (libadwaita)."""
 
 import json
+import math
 import os
 import socket
 import sys
@@ -76,13 +77,35 @@ void main()
 }
 """
 
-FRAGMENT = """#version 330 core
+# Pass 1: one texel per dot (waves, fingers)
+STATE_FRAGMENT = """#version 330 core
 out vec4 fragColor;
 uniform vec2 fieldSize;
 uniform float time;
-uniform float scale;
 uniform vec4 W[8];
 uniform vec4 T[5];
+vec4 loadState(vec2 c) { return vec4(0.0); }  // unused in this pass
+%s
+void main()
+{
+    fragColor = encodeState(dotState(floor(gl_FragCoord.xy)));
+}
+"""
+
+# Pass 2: per pixel, reads the 3x3 nearest dots from pass 1
+FRAGMENT = """#version 330 core
+out vec4 fragColor;
+uniform vec2 fieldSize;
+uniform float scale;
+uniform vec4 T[5];
+uniform sampler2D states;
+float time;  // only used by pass 1
+vec4 W[8];
+vec2 gridSize(vec2 size);
+vec4 loadState(vec2 c)
+{
+    return texelFetch(states, ivec2(clamp(c, vec2(0.0), gridSize(fieldSize) - 1.0)), 0);
+}
 %s
 void main()
 {
@@ -90,6 +113,82 @@ void main()
     fragColor = shade(px);
 }
 """
+
+SPACING = 6  # must match ripple.glsl
+
+
+def compile_programs(core):
+    from OpenGL.GL import shaders
+    vertex = shaders.compileShader(VERTEX, GL.GL_VERTEX_SHADER)
+    return [shaders.compileProgram(vertex, shaders.compileShader(src % core, GL.GL_FRAGMENT_SHADER),
+                                   validate=False)
+            for src in (STATE_FRAGMENT, FRAGMENT)]
+
+
+class FieldRenderer:
+    """GL side of the field; needs a current GL 3.3 context. Kept apart from
+    the widget so it can also be benchmarked headless."""
+
+    def __init__(self):
+        self.state_program, self.program = compile_programs(find_shader())
+        self.vao = GL.glGenVertexArrays(1)
+        self.fbo = GL.glGenFramebuffers(1)
+        self.texture = GL.glGenTextures(1)
+        self.grid = None
+        self.loc = {p: {name: GL.glGetUniformLocation(p, name)
+                        for name in ("fieldSize", "time", "scale", "W", "T", "states")}
+                    for p in (self.state_program, self.program)}
+
+    def delete(self):
+        GL.glDeleteTextures(1, [self.texture])
+        GL.glDeleteFramebuffers(1, [self.fbo])
+        GL.glDeleteVertexArrays(1, [self.vao])
+        GL.glDeleteProgram(self.state_program)
+        GL.glDeleteProgram(self.program)
+
+    def ensure_grid(self, w, h):
+        grid = (math.ceil(w / SPACING) + 1, math.ceil(h / SPACING) + 1)
+        if grid == self.grid:
+            return
+        self.grid = grid
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.texture)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, *grid, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, None)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.fbo)
+        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, self.texture, 0)
+
+    def render(self, w, h, scale, now, waves, touches, bind_target):
+        """Draws a w x h (logical) field; bind_target() rebinds the output framebuffer."""
+        flat_t = [(t["x"] * w, t["y"] * h, t["p"] / 253, 1.0) for t in touches[:5]]
+        flat_t = [c for t in flat_t + [(0.0, 0.0, 0.0, 0.0)] * (5 - len(flat_t)) for c in t]
+        GL.glBindVertexArray(self.vao)
+
+        self.ensure_grid(w, h)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.fbo)
+        GL.glViewport(0, 0, *self.grid)
+        GL.glDisable(GL.GL_BLEND)
+        loc = self.loc[self.state_program]
+        GL.glUseProgram(self.state_program)
+        GL.glUniform2f(loc["fieldSize"], w, h)
+        GL.glUniform1f(loc["time"], now)
+        GL.glUniform4fv(loc["W"], 8, [c for wave in waves for c in wave])
+        GL.glUniform4fv(loc["T"], 5, flat_t)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
+
+        bind_target()
+        GL.glViewport(0, 0, int(w * scale), int(h * scale))
+        GL.glClearColor(0, 0, 0, 0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+        loc = self.loc[self.program]
+        GL.glUseProgram(self.program)
+        GL.glUniform2f(loc["fieldSize"], w, h)
+        GL.glUniform1f(loc["scale"], scale)
+        GL.glUniform4fv(loc["T"], 5, flat_t)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.texture)
+        GL.glUniform1i(loc["states"], 0)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
 
 
 class TrackpadField(Gtk.GLArea):
@@ -107,7 +206,7 @@ class TrackpadField(Gtk.GLArea):
         self.next_wave = 0
         self.wave_end = 0.0
         self.ticking = False
-        self.program = None
+        self.renderer = None
         self.connect("realize", self.on_realize)
         self.connect("unrealize", self.on_unrealize)
         self.connect("render", self.on_render)
@@ -122,43 +221,23 @@ class TrackpadField(Gtk.GLArea):
         if self.get_error():
             return
         try:
-            from OpenGL.GL import shaders
-            self.program = shaders.compileProgram(
-                shaders.compileShader(VERTEX, GL.GL_VERTEX_SHADER),
-                shaders.compileShader(FRAGMENT % find_shader(), GL.GL_FRAGMENT_SHADER),
-                validate=False)
+            self.renderer = FieldRenderer()
         except Exception as e:  # show the reason instead of a black box
             print(f"trackpad field disabled: {e}", file=sys.stderr)
-            self.program = None
-            return
-        self.vao = GL.glGenVertexArrays(1)
-        self.loc = {name: GL.glGetUniformLocation(self.program, name)
-                    for name in ("fieldSize", "time", "scale", "W", "T")}
 
     def on_unrealize(self, _area):
         self.make_current()
-        if self.program:
-            GL.glDeleteVertexArrays(1, [self.vao])
-            GL.glDeleteProgram(self.program)
-            self.program = None
+        if self.renderer:
+            self.renderer.delete()
+            self.renderer = None
 
     def on_render(self, _area, _context):
-        GL.glClearColor(0, 0, 0, 0)
-        GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-        if not self.program:
+        if not self.renderer:
+            GL.glClearColor(0, 0, 0, 0)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
             return True
-        scale = self.get_scale_factor()
-        w, h = self.get_width(), self.get_height()
-        GL.glUseProgram(self.program)
-        GL.glUniform2f(self.loc["fieldSize"], w, h)
-        GL.glUniform1f(self.loc["time"], self.now())
-        GL.glUniform1f(self.loc["scale"], scale)
-        GL.glUniform4fv(self.loc["W"], 8, [c for wave in self.waves for c in wave])
-        touches = [(t["x"] * w, t["y"] * h, t["p"] / 253, 1.0) for t in self.touches[:5]]
-        touches += [(0.0, 0.0, 0.0, 0.0)] * (5 - len(touches))
-        GL.glUniform4fv(self.loc["T"], 5, [c for t in touches for c in t])
-        GL.glBindVertexArray(self.vao)
-        GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
+        self.renderer.render(self.get_width(), self.get_height(), self.get_scale_factor(),
+                             self.now(), self.waves, self.touches, self.attach_buffers)
         return True
 
     def set_touches(self, touches):

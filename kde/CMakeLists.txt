@@ -16,10 +16,11 @@ target_link_libraries(kcm_mt2d PRIVATE Qt6::Quick KF6::KCMUtilsQuick KF6::I18n K
 
 # The field shader core is shared with the GTK app; splice it into the Qt wrapper
 set(RIPPLE_CORE_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/ripple.glsl)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${RIPPLE_CORE_FILE} ripple.frag.in)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${RIPPLE_CORE_FILE} ripple.frag.in ripple_state.frag.in)
 file(READ ${RIPPLE_CORE_FILE} RIPPLE_CORE)
 configure_file(ripple.frag.in ${CMAKE_CURRENT_BINARY_DIR}/ripple.frag @ONLY)
+configure_file(ripple_state.frag.in ${CMAKE_CURRENT_BINARY_DIR}/ripple_state.frag @ONLY)
 qt_add_shaders(kcm_mt2d "kcm_mt2d_shaders"
     PREFIX "/mt2d"
     BASE ${CMAKE_CURRENT_BINARY_DIR}
-    FILES ${CMAKE_CURRENT_BINARY_DIR}/ripple.frag)
+    FILES ${CMAKE_CURRENT_BINARY_DIR}/ripple.frag ${CMAKE_CURRENT_BINARY_DIR}/ripple_state.frag)

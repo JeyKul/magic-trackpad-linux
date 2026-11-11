@@ -1,0 +1,28 @@
+#version 440
+// Pass 1: one texel per dot, see shaders/ripple.glsl (spliced in at build time)
+
+layout(location = 0) in vec2 qt_TexCoord0;
+layout(location = 0) out vec4 fragColor;
+
+layout(std140, binding = 0) uniform buf {
+    mat4 qt_Matrix;
+    float qt_Opacity;
+    vec2 fieldSize;
+    float time;
+    vec4 w0; vec4 w1; vec4 w2; vec4 w3; vec4 w4; vec4 w5; vec4 w6; vec4 w7;
+    vec4 t0; vec4 t1; vec4 t2; vec4 t3; vec4 t4;
+};
+
+vec4 W[8];
+vec4 T[5];
+
+vec4 loadState(vec2 c) { return vec4(0.0); }  // unused in this pass
+
+@RIPPLE_CORE@
+
+void main()
+{
+    W = vec4[8](w0, w1, w2, w3, w4, w5, w6, w7);
+    T = vec4[5](t0, t1, t2, t3, t4);
+    fragColor = encodeState(dotState(floor(qt_TexCoord0 * gridSize(fieldSize))));
+}
