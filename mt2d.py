@@ -48,8 +48,9 @@ SUPPORTED = {
 }
 # Built-in Force Touch trackpads of T2 MacBooks (behind the T2's USB bridge).
 # Same interface layout and reports as the Magic Trackpad 2 over USB.
-SUPPORTED |= {(0x0003, 0x05AC, pid) for pid in (0x0278, 0x027A, 0x027B, 0x027C, 0x027D,
-                                                0x027E, 0x027F, 0x0280, 0x0340)}
+T2_TRACKPADS = {(0x0003, 0x05AC, pid) for pid in (0x0278, 0x027A, 0x027B, 0x027C, 0x027D,
+                                                  0x027E, 0x027F, 0x0280, 0x0340)}
+SUPPORTED |= T2_TRACKPADS
 
 # Thresholds are in Magic Trackpad 2 units (0..253). Trackpads reporting raw
 # force (T2 MacBooks: 0..6000) are mapped onto that scale with a curve fitted on
@@ -194,13 +195,16 @@ class Trackpad:
     same vendor reports, unwrapped, go to the interface that declares the 0x53
     haptic output report."""
 
-    def __init__(self, control, event, battery, usb):
+    def __init__(self, control, event, battery, usb, ids):
         self.hidraw_path = control
         self.hid = os.open(control, os.O_RDWR)
         self.dev = evdev.InputDevice(event)
         self.scale = pressure_scale(self.dev.absinfo(ecodes.ABS_MT_PRESSURE).max)
         self.battery = battery
         self.usb = usb
+        # Fastest steady pulse rate (MIDI easter egg): measured ~215/s on a Magic
+        # Trackpad over USB; the T2 bridge stalls above ~85/s
+        self.max_pulse_hz = 80.0 if ids in T2_TRACKPADS or not usb else 160.0
         self.pulses = queue.Queue()
         # Each pulse is a SET_REPORT round trip over Bluetooth; keep it off the event loop
         threading.Thread(target=self._pulse_worker, daemon=True).start()
@@ -299,7 +303,7 @@ def find_trackpad():
         usb = control is not None
         control = control or touch
         return Trackpad("/dev/" + os.path.basename(control),
-                        "/dev/input/" + os.path.basename(event), battery, usb)
+                        "/dev/input/" + os.path.basename(event), battery, usb, hid_ids(nodes[0][1]))
     return None
 
 
@@ -454,11 +458,13 @@ class MidiPlayer(threading.Thread):
                 while t < stop:
                     if self.stopped.wait(max(0.0, t - time.monotonic())):
                         return
-                    pad.pulse_now(pulse)
+                    try:
+                        pad.pulse_now(pulse)
+                    except OSError as e:
+                        if e.errno != errno.EPIPE:  # a stalled pulse is skipped; a gone device ends it
+                            return
                     pulse = MIDI_PULSE
                     t += period
-        except OSError:
-            pass
         finally:
             self.d.midi_done(self)
 
@@ -657,8 +663,7 @@ class Daemon:
         if not line:
             raise ValueError("no notes to play")
         self.stop_midi()
-        top = 160.0 if self.pad.usb else 80.0  # what one write per pulse can keep up with
-        self.player = MidiPlayer(self, fit_octaves(line, top))
+        self.player = MidiPlayer(self, fit_octaves(line, self.pad.max_pulse_hz))
         self.player.start()
         self.log(f"playing {os.path.basename(path)}: {len(line)} notes")
 
