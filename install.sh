@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 
 install -Dm755 mt2d.py ~/.local/bin/mt2d
 install -Dm755 gtk/mt2d-settings ~/.local/bin/mt2d-settings
+install -Dm644 shaders/ripple.glsl ~/.local/share/mt2d/ripple.glsl
 mkdir -p ~/.local/share/applications
 sed 's|Exec=mt2d-settings|Exec='"$HOME"'/.local/bin/mt2d-settings|' data/io.github.mt2d.Settings.desktop \
     > ~/.local/share/applications/io.github.mt2d.Settings.desktop

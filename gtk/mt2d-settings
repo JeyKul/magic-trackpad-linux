@@ -2,20 +2,17 @@
 """Magic Trackpad settings for GNOME and other GTK desktops (libadwaita)."""
 
 import json
-import math
 import os
 import socket
 import sys
 import time
 
-import cairo
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
-
-ACCENT = (0.24, 0.56, 0.98)
+from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+from OpenGL import GL  # noqa: E402
 
 SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "mt2d.sock")
 
@@ -59,105 +56,133 @@ class Daemon:
             return {"ok": False, "error": f"mt2d is not running ({e.strerror or e})"}
 
 
-class TrackpadField(Gtk.DrawingArea):
-    """Live view of the trackpad: fingers glow, a click sends out a small dotted
-    ripple, a force click a bigger multi-ring one, all clipped to the field."""
+def find_shader():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for path in (os.path.join(here, "..", "shaders", "ripple.glsl"),
+                 os.path.expanduser("~/.local/share/mt2d/ripple.glsl"),
+                 "/usr/share/mt2d/ripple.glsl"):
+        if os.path.exists(path):
+            with open(path) as f:
+                return f.read()
+    raise FileNotFoundError("ripple.glsl not found")
+
+
+VERTEX = """#version 330 core
+void main()
+{
+    // Full-screen triangle, no vertex buffer needed
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+FRAGMENT = """#version 330 core
+out vec4 fragColor;
+uniform vec2 fieldSize;
+uniform float time;
+uniform float scale;
+uniform vec4 W[8];
+uniform vec4 T[5];
+%s
+void main()
+{
+    vec2 px = vec2(gl_FragCoord.x, fieldSize.y * scale - gl_FragCoord.y) / scale;
+    fragColor = shade(px);
+}
+"""
+
+
+class TrackpadField(Gtk.GLArea):
+    """Live view of the trackpad, rendered by shaders/ripple.glsl: a dense dot
+    texture, fingers light the dots under them, a click sends a small ripple
+    through it, a force click a big one."""
 
     def __init__(self):
         super().__init__(hexpand=True)
+        self.set_allowed_apis(Gdk.GLAPI.GL)
+        self.set_required_version(3, 3)
+        self.epoch = time.monotonic()
         self.touches = []
-        self.waves = []
+        self.waves = [(0.0, 0.0, 0.0, 0.0)] * 8
+        self.next_wave = 0
+        self.wave_end = 0.0
         self.ticking = False
-        self.set_draw_func(self.draw)
-        self.connect("resize", lambda _w, width, _h: self.set_content_height(int(width * 115 / 160)))
-        self.set_content_height(300)
+        self.program = None
+        self.connect("realize", self.on_realize)
+        self.connect("unrealize", self.on_unrealize)
+        self.connect("render", self.on_render)
+        self.connect("resize", lambda _w, width, _h: self.set_size_request(-1, int(width / self.get_scale_factor() * 115 / 160)))
+        self.set_size_request(-1, 300)
+
+    def now(self):
+        return time.monotonic() - self.epoch
+
+    def on_realize(self, _area):
+        self.make_current()
+        if self.get_error():
+            return
+        try:
+            from OpenGL.GL import shaders
+            self.program = shaders.compileProgram(
+                shaders.compileShader(VERTEX, GL.GL_VERTEX_SHADER),
+                shaders.compileShader(FRAGMENT % find_shader(), GL.GL_FRAGMENT_SHADER),
+                validate=False)
+        except Exception as e:  # show the reason instead of a black box
+            print(f"trackpad field disabled: {e}", file=sys.stderr)
+            self.program = None
+            return
+        self.vao = GL.glGenVertexArrays(1)
+        self.loc = {name: GL.glGetUniformLocation(self.program, name)
+                    for name in ("fieldSize", "time", "scale", "W", "T")}
+
+    def on_unrealize(self, _area):
+        self.make_current()
+        if self.program:
+            GL.glDeleteVertexArrays(1, [self.vao])
+            GL.glDeleteProgram(self.program)
+            self.program = None
+
+    def on_render(self, _area, _context):
+        GL.glClearColor(0, 0, 0, 0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+        if not self.program:
+            return True
+        scale = self.get_scale_factor()
+        w, h = self.get_width(), self.get_height()
+        GL.glUseProgram(self.program)
+        GL.glUniform2f(self.loc["fieldSize"], w, h)
+        GL.glUniform1f(self.loc["time"], self.now())
+        GL.glUniform1f(self.loc["scale"], scale)
+        GL.glUniform4fv(self.loc["W"], 8, [c for wave in self.waves for c in wave])
+        touches = [(t["x"] * w, t["y"] * h, t["p"] / 253, 1.0) for t in self.touches[:5]]
+        touches += [(0.0, 0.0, 0.0, 0.0)] * (5 - len(touches))
+        GL.glUniform4fv(self.loc["T"], 5, [c for t in touches for c in t])
+        GL.glBindVertexArray(self.vao)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
+        return True
 
     def set_touches(self, touches):
         if touches or self.touches:
             self.touches = touches
-            self.queue_draw()
+            self.queue_render()
 
     def ripple(self, force):
         t = self.touches[0] if self.touches else {"x": 0.5, "y": 0.5}
-        now = time.monotonic()
-        if force:
-            for i in range(3):
-                self.waves.append(dict(x=t["x"], y=t["y"], start=now + i * 0.19, duration=1.2,
-                                       reach=0.95, dot=2.6))
-        else:
-            self.waves.append(dict(x=t["x"], y=t["y"], start=now, duration=0.65, reach=0.28, dot=1.8))
+        start = self.now()
+        self.waves[self.next_wave] = (t["x"] * self.get_width(), t["y"] * self.get_height(),
+                                      start, 2.0 if force else 1.0)
+        self.next_wave = (self.next_wave + 1) % 8
+        self.wave_end = max(self.wave_end, start + (2.4 if force else 1.3))
         if not self.ticking:
             self.ticking = True
             self.add_tick_callback(self.tick)
 
     def tick(self, *_):
-        self.queue_draw()
-        if not self.waves:
+        self.queue_render()
+        if self.now() > self.wave_end:
             self.ticking = False
             return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
-
-    @staticmethod
-    def rounded(cr, x, y, w, h, r):
-        cr.new_sub_path()
-        cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
-        cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
-        cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
-        cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
-        cr.close_path()
-
-    def draw(self, _area, cr, w, h):
-        fg = self.get_color()
-        self.rounded(cr, 0.5, 0.5, w - 1, h - 1, w * 0.06)
-        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.05)
-        cr.fill_preserve()
-        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.15)
-        cr.set_line_width(1)
-        cr.stroke_preserve()
-        cr.clip()
-
-        # Faint dot grid
-        cr.set_source_rgba(*ACCENT, 0.22)
-        step = max(12, w / 28)
-        gx = step / 2
-        while gx < w:
-            gy = step / 2
-            while gy < h:
-                cr.rectangle(gx - 1, gy - 1, 2, 2)
-                gy += step
-            gx += step
-        cr.fill()
-
-        # Ripples: rings made of dots, eased out and fading
-        now = time.monotonic()
-        self.waves = [wv for wv in self.waves if now - wv["start"] < wv["duration"]]
-        for wv in self.waves:
-            age = now - wv["start"]
-            if age < 0:
-                continue
-            t = age / wv["duration"]
-            r = 6 + (1 - (1 - t) ** 2) * wv["reach"] * w
-            n = max(12, int(2 * math.pi * r / 9))
-            dot = wv["dot"] * (1 - 0.4 * t)
-            cr.set_source_rgba(*ACCENT, (1 - t) ** 1.4 * 0.9)
-            for i in range(n):
-                ang = i / n * 2 * math.pi
-                cx, cy = wv["x"] * w + math.cos(ang) * r, wv["y"] * h + math.sin(ang) * r
-                cr.new_sub_path()
-                cr.arc(cx, cy, dot, 0, 2 * math.pi)
-            cr.fill()
-
-        # Fingers: soft glow growing with pressure
-        for touch in self.touches:
-            x, y = touch["x"] * w, touch["y"] * h
-            r = 10 + touch["p"] / 253 * 22
-            g = cairo.RadialGradient(x, y, 0, x, y, r)
-            g.add_color_stop_rgba(0, *ACCENT, 0.85)
-            g.add_color_stop_rgba(0.35, *ACCENT, 0.45)
-            g.add_color_stop_rgba(1, *ACCENT, 0)
-            cr.set_source(g)
-            cr.arc(x, y, r, 0, 2 * math.pi)
-            cr.fill()
 
 
 class Window(Adw.ApplicationWindow):
