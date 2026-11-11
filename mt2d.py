@@ -53,7 +53,7 @@ STRENGTH = {
     "medium": (0x060617, 0x000014),
     "firm":   (0x08081E, 0x020218),
     "max":    (0xFFFFFF, 0xFFFFFF),
-    "off":    (0x000000, 0x000000),
+    "off":    (0x000017, 0x000014),  # medium click point, no actuator: silent
 }
 FORCE_PULSE = 0x060622
 

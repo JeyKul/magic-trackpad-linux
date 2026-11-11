@@ -18,7 +18,7 @@ from OpenGL import GL  # noqa: E402
 SOCKET_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "mt2d.sock")
 
 STRENGTHS = [("light", "Light"), ("medium", "Medium"), ("firm", "Firm"),
-             ("max", "Maximum (loud)"), ("off", "Off")]
+             ("max", "Maximum (loud)"), ("off", "Off (silent clicks)")]
 ACTIONS = [
     (["BTN_MIDDLE"], "Middle click"),
     (["BTN_RIGHT"], "Right click"),
@@ -306,13 +306,8 @@ class Window(Adw.ApplicationWindow):
         self.strength = Adw.ComboRow(title="Haptic feedback",
                                      model=Gtk.StringList.new([n for _, n in STRENGTHS]))
         self.strength.connect("notify::selected", lambda *_: self.queue(
-            {"haptics": {"strength": STRENGTHS[self.strength.get_selected()][0]}}))
+            {"haptics": {"strength": STRENGTHS[self.strength.get_selected()][0], "silent": False}}))
         clicking.add(self.strength)
-        self.silent = Adw.SwitchRow(title="Silent clicking",
-                                    subtitle="Click without haptic feedback")
-        self.silent.connect("notify::active", lambda *_: self.queue(
-            {"haptics": {"silent": self.silent.get_active()}}))
-        clicking.add(self.silent)
         test = Adw.ActionRow(title="Test haptics")
         for value, label in (("weak", "Weak"), ("medium", "Medium"), ("strong", "Strong")):
             b = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
@@ -401,7 +396,6 @@ class Window(Adw.ApplicationWindow):
         self.mode.set_selected(0 if c["mode"] == "host" else 1)
         self.click_force.set_value(c["click"]["threshold"])
         self.strength.set_selected([k for k, _ in STRENGTHS].index(c["haptics"]["strength"]))
-        self.silent.set_active(c["haptics"]["silent"])
         f = c["force_click"]
         self.force_on.set_active(f["enabled"])
         self.force_force.set_value(f["threshold"])

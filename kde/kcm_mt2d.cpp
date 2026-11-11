@@ -4,6 +4,7 @@
 #include <KQuickConfigModule>
 
 #include <QJsonDocument>
+#include <QProcess>
 #include <QJsonObject>
 #include <QStandardPaths>
 #include <QVariantMap>
@@ -21,8 +22,29 @@ public:
     Mt2dKcm(QObject *parent, const KPluginMetaData &data)
         : KQuickConfigModule(parent, data)
     {
-        // Changes apply immediately, like the trackpad itself
-        setButtons(NoAdditionalButton);
+        setButtons(Apply | Default);
+    }
+
+    // The page keeps the draft config; these just hand the standard buttons to it
+    void load() override
+    {
+        // The widget wrapper resets its own state on load and only mirrors ours
+        // when it changes, so make sure the page's update is a change
+        setRepresentsDefaults(false);
+        Q_EMIT loadRequested();
+    }
+    void save() override
+    {
+        Q_EMIT saveRequested();
+    }
+    void defaults() override
+    {
+        Q_EMIT defaultsRequested();
+    }
+
+    Q_INVOKABLE void startService() const
+    {
+        QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("--user"), QStringLiteral("start"), QStringLiteral("mt2d.service")});
     }
 
     Q_INVOKABLE QVariantMap call(const QVariantMap &command) const
@@ -49,17 +71,22 @@ public:
         const QByteArray request = QJsonDocument(QJsonObject::fromVariantMap(command)).toJson(QJsonDocument::Compact);
         if (bind(fd, reinterpret_cast<sockaddr *>(&local), sizeof(local)) < 0
             || sendto(fd, request.constData(), request.size(), 0, reinterpret_cast<sockaddr *>(&remote), sizeof(remote)) < 0) {
-            reply = error(QStringLiteral("mt2d is not running (systemctl --user start mt2d)"));
+            reply = error(QStringLiteral("not running"));
         } else {
             QByteArray buffer(65536, Qt::Uninitialized);
             const ssize_t n = recv(fd, buffer.data(), buffer.size(), 0);
             reply = n > 0 ? QJsonDocument::fromJson(buffer.left(n)).object().toVariantMap()
-                          : error(QStringLiteral("mt2d did not answer"));
+                          : error(QStringLiteral("not running"));
         }
         close(fd);
         unlink(local.sun_path);
         return reply;
     }
+
+Q_SIGNALS:
+    void loadRequested();
+    void saveRequested();
+    void defaultsRequested();
 
 private:
     static QVariantMap error(const QString &message)
