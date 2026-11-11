@@ -3,3 +3,5 @@ KERNEL=="hidraw*", KERNELS=="0003:05AC:0265.*", TAG+="uaccess"
 KERNEL=="hidraw*", KERNELS=="0003:05AC:0324.*", TAG+="uaccess"
 KERNEL=="hidraw*", KERNELS=="0005:004C:0265.*", TAG+="uaccess"
 KERNEL=="hidraw*", KERNELS=="0005:004C:0324.*", TAG+="uaccess"
+# mt2d re-emits the trackpad and force-click actions through uinput; some distros keep it root-only
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

@@ -72,10 +72,60 @@ their 3×3 nearest dots. It only renders while something moves. Worst case
 
 ## Install
 
-Requirements: Python 3.11+, `python-evdev`, a user in the `input` group
-(for evdev and uinput access). Settings: `kcmutils`, `qt6-shadertools`
-and `extra-cmake-modules` to build the KDE page; `python-gobject`,
-`libadwaita` and `python-opengl` for the GTK app.
+### Requirements
+
+There are three parts; install the driver plus the settings UI for your
+desktop.
+
+| Part | Needs |
+|---|---|
+| Driver (`mt2d`) | Python ≥ 3.11, python-evdev |
+| KDE Plasma settings page | KDE Frameworks 6, Qt ≥ 6.4 with Qt Shader Tools, a C++ compiler |
+| Settings app for GNOME & others | GTK 4, libadwaita ≥ 1.4, PyGObject, PyOpenGL |
+
+**Arch Linux, Manjaro, EndeavourOS** (pacman)
+
+```sh
+sudo pacman -S --needed python python-evdev
+# KDE Plasma
+sudo pacman -S --needed cmake extra-cmake-modules gcc kcmutils ki18n kcoreaddons kirigami qt6-declarative qt6-shadertools
+# GNOME & others
+sudo pacman -S --needed python-gobject gtk4 libadwaita python-opengl
+```
+
+**Debian 13+, Ubuntu 25.04+, Kubuntu** (apt)
+
+```sh
+sudo apt install python3 python3-evdev
+# KDE Plasma
+sudo apt install cmake extra-cmake-modules g++ libkf6kcmutils-dev libkf6i18n-dev libkf6coreaddons-dev \
+    qt6-declarative-dev qt6-shadertools-dev qml6-module-org-kde-kirigami qml6-module-org-kde-kcmutils
+# GNOME & others
+sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-opengl
+```
+
+Ubuntu 24.04 works for the driver and the GTK app; its Plasma is still
+version 5, so the KDE page needs 25.04 or later.
+
+**Fedora 40+** (dnf / rpm)
+
+```sh
+sudo dnf install python3 python3-evdev
+# KDE Plasma
+sudo dnf install cmake extra-cmake-modules gcc-c++ kf6-kcmutils-devel kf6-ki18n-devel kf6-kcoreaddons-devel \
+    kf6-kirigami qt6-qtdeclarative-devel qt6-qtshadertools-devel
+# GNOME & others
+sudo dnf install python3-gobject gtk4 libadwaita python3-pyopengl
+```
+
+Your user also needs to be in the `input` group, for access to the touch
+input and to create the virtual input devices:
+
+```sh
+sudo usermod -aG input "$USER"   # then log out and back in
+```
+
+### Install
 
 ```sh
 git clone https://github.com/JeyKul/magic-trackpad-linux
